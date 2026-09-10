@@ -23,6 +23,7 @@ class UpdateSubscriptionRequest extends FormRequest
     {
         return [
             'service_name' => ['sometimes', 'required', 'string', 'max:150'],
+            'color_hex' => ['nullable', 'string', 'max:20'],
             'total_amount' => ['sometimes', 'required', 'numeric', 'min:0.01'],
             'billing_day' => ['sometimes', 'required', 'integer', 'between:1,31'],
             'credit_card_id' => ['nullable', 'integer', 'exists:credit_cards,id'],

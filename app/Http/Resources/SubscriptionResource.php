@@ -18,6 +18,7 @@ class SubscriptionResource extends JsonResource
             'id' => $this->id,
             'workspace_id' => $this->workspace_id,
             'service_name' => $this->service_name,
+            'color_hex' => $this->color_hex ?? '#6366f1',
             'total_amount' => (float) $this->total_amount,
             'billing_day' => $this->billing_day,
             'credit_card_id' => $this->credit_card_id,

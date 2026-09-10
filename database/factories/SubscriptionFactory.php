@@ -21,6 +21,7 @@ class SubscriptionFactory extends Factory
         return [
             'workspace_id' => Workspace::factory(),
             'service_name' => fake()->randomElement(['Netflix', 'Spotify Family', 'Amazon Prime', 'YouTube Premium', 'Disney+']),
+            'color_hex' => fake()->hexColor(),
             'total_amount' => 55.90,
             'billing_day' => 15,
             'is_active' => true,

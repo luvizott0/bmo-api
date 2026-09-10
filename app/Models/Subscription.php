@@ -12,6 +12,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 #[Fillable([
     'workspace_id',
     'service_name',
+    'color_hex',
     'total_amount',
     'billing_day',
     'credit_card_id',

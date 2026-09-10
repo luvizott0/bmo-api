@@ -23,6 +23,7 @@ class StoreSubscriptionRequest extends FormRequest
     {
         return [
             'service_name' => ['required', 'string', 'max:150'],
+            'color_hex' => ['nullable', 'string', 'max:20'],
             'total_amount' => ['required', 'numeric', 'min:0.01'],
             'billing_day' => ['required', 'integer', 'between:1,31'],
             'credit_card_id' => ['nullable', 'integer', 'exists:credit_cards,id'],

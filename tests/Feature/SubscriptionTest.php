@@ -37,9 +37,10 @@ test('user can list subscriptions belonging to active workspace', function () {
         ->assertJsonCount(2, 'data');
 });
 
-test('user can create a subscription with initial members', function () {
+test('user can create a subscription with initial members and custom color', function () {
     $payload = [
         'service_name' => 'Netflix 4K Família',
+        'color_hex' => '#e50914',
         'total_amount' => 59.90,
         'billing_day' => 12,
         'notes' => 'Shared with friends',
@@ -62,11 +63,13 @@ test('user can create a subscription with initial members', function () {
 
     $response->assertCreated()
         ->assertJsonPath('data.service_name', 'Netflix 4K Família')
+        ->assertJsonPath('data.color_hex', '#e50914')
         ->assertJsonCount(2, 'data.members');
 
     $this->assertDatabaseHas('subscriptions', [
         'workspace_id' => $this->workspace->id,
         'service_name' => 'Netflix 4K Família',
+        'color_hex' => '#e50914',
     ]);
 
     $this->assertDatabaseHas('subscription_members', [
