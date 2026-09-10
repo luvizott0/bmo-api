@@ -13,6 +13,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 #[Fillable([
     'workspace_id',
     'name',
+    'color_hex',
     'type',
     'estimated_amount',
     'due_day',

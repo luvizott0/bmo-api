@@ -25,6 +25,7 @@ class UpdateFixedBillRequest extends FormRequest
     {
         return [
             'name' => ['sometimes', 'required', 'string', 'max:150'],
+            'color_hex' => ['nullable', 'string', 'max:20'],
             'type' => ['sometimes', 'required', Rule::enum(TransactionType::class)],
             'estimated_amount' => ['sometimes', 'required', 'numeric', 'min:0.01'],
             'due_day' => ['sometimes', 'required', 'integer', 'between:1,31'],

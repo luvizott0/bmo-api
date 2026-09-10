@@ -60,5 +60,6 @@ Route::middleware('auth:sanctum')->group(function (): void {
         // Fixed Bills & Reminders
         Route::apiResource('fixed-bills', FixedBillController::class);
         Route::post('/fixed-bills/{fixed_bill}/pay', [FixedBillController::class, 'pay']);
+        Route::post('/fixed-bills/{fixed_bill}/unpay', [FixedBillController::class, 'unpay']);
     });
 });

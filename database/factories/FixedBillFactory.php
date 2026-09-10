@@ -22,6 +22,7 @@ class FixedBillFactory extends Factory
         return [
             'workspace_id' => Workspace::factory(),
             'name' => fake()->randomElement(['Rent', 'Condo Fee', 'Electricity', 'Internet', 'Water']),
+            'color_hex' => fake()->hexColor(),
             'type' => TransactionType::Expense,
             'estimated_amount' => fake()->randomFloat(2, 100, 2000),
             'due_day' => 10,

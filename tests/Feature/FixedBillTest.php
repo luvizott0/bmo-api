@@ -56,9 +56,10 @@ test('user can list fixed bills of workspace and filter by active status', funct
         ->assertJsonCount(2, 'data');
 });
 
-test('user can create a fixed bill', function () {
+test('user can create a fixed bill with custom color', function () {
     $payload = [
         'name' => 'Fiber Internet',
+        'color_hex' => '#0ea5e9',
         'type' => TransactionType::Expense->value,
         'estimated_amount' => 129.90,
         'due_day' => 15,
@@ -73,12 +74,14 @@ test('user can create a fixed bill', function () {
 
     $response->assertCreated()
         ->assertJsonPath('data.name', 'Fiber Internet')
+        ->assertJsonPath('data.color_hex', '#0ea5e9')
         ->assertJsonPath('data.estimated_amount', 129.9)
         ->assertJsonPath('data.due_day', 15);
 
     $this->assertDatabaseHas('fixed_bills', [
         'workspace_id' => $this->workspace->id,
         'name' => 'Fiber Internet',
+        'color_hex' => '#0ea5e9',
     ]);
 });
 
@@ -200,6 +203,40 @@ test('cannot liquidate fixed bill linking both bank account and credit card', fu
 
     $response->assertUnprocessable()
         ->assertJsonValidationErrors(['bank_account_id']);
+});
+
+test('user can unpay fixed bill and account balance is restored', function () {
+    $bill = FixedBill::factory()->create([
+        'workspace_id' => $this->workspace->id,
+        'name' => 'Electricity Copel',
+        'type' => TransactionType::Expense,
+        'estimated_amount' => 180.00,
+        'preferred_bank_account_id' => $this->account->id,
+    ]);
+
+    // Pay the bill first (2500 - 180 = 2320)
+    $this->actingAs($this->user)
+        ->postJson("/api/fixed-bills/{$bill->id}/pay", [
+            'amount' => 180.00,
+            'payment_date' => '2026-09-10',
+            'bank_account_id' => $this->account->id,
+        ])
+        ->assertCreated();
+
+    expect((float) $this->account->fresh()->current_balance)->toBe(2320.0);
+
+    // Now unpay
+    $unpayResponse = $this->actingAs($this->user)
+        ->postJson("/api/fixed-bills/{$bill->id}/unpay", [
+            'reference_month' => '2026-09',
+        ]);
+
+    $unpayResponse->assertOk()
+        ->assertJsonPath('message', 'Fixed bill marked as unpaid.')
+        ->assertJsonPath('bill.is_paid', false);
+
+    // Balance restored to 2500
+    expect((float) $this->account->fresh()->current_balance)->toBe(2500.0);
 });
 
 test('artisan command check due bills processes approaching bills', function () {

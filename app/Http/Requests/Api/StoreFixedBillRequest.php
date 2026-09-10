@@ -25,6 +25,7 @@ class StoreFixedBillRequest extends FormRequest
     {
         return [
             'name' => ['required', 'string', 'max:150'],
+            'color_hex' => ['nullable', 'string', 'max:20'],
             'type' => ['nullable', Rule::enum(TransactionType::class)],
             'estimated_amount' => ['required', 'numeric', 'min:0.01'],
             'due_day' => ['required', 'integer', 'between:1,31'],
