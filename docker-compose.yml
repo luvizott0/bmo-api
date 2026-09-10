@@ -1,0 +1,57 @@
+services:
+  home-manager-api:
+    image: home-manager-api:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: home-manager-api
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    environment:
+      - APP_NAME=${APP_NAME:-Home Manager}
+      - APP_ENV=${APP_ENV:-production}
+      - APP_DEBUG=${APP_DEBUG:-false}
+      - APP_KEY=${APP_KEY:-}
+      - APP_URL=${APP_URL:-http://localhost:8000}
+      - DB_CONNECTION=${DB_CONNECTION:-sqlite}
+      - DB_DATABASE=${DB_DATABASE:-/var/www/html/database/database.sqlite}
+      - AUTORUN_LARAVEL_MIGRATION=${AUTORUN_LARAVEL_MIGRATION:-true}
+      - SESSION_DRIVER=${SESSION_DRIVER:-database}
+      - CACHE_STORE=${CACHE_STORE:-database}
+      - QUEUE_CONNECTION=${QUEUE_CONNECTION:-database}
+      - LOG_CHANNEL=${LOG_CHANNEL:-stack}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+    volumes:
+      - api-data:/var/www/html/database
+      - api-storage:/var/www/html/storage
+    networks:
+      - home-manager-net
+
+  house-manager:
+    image: house-manager:latest
+    build:
+      context: ../house-manager
+      dockerfile: Dockerfile
+    container_name: house-manager
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    environment:
+      - BACKEND_HOST=home-manager-api
+      - BACKEND_PORT=8000
+      - PORT=80
+    depends_on:
+      - home-manager-api
+    networks:
+      - home-manager-net
+
+volumes:
+  api-data:
+    name: home_manager_api_data
+  api-storage:
+    name: home_manager_api_storage
+
+networks:
+  home-manager-net:
+    name: home_manager_network
