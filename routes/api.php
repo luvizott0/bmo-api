@@ -5,6 +5,8 @@ use App\Http\Controllers\Api\BankAccountController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CreditCardController;
 use App\Http\Controllers\Api\FixedBillController;
+use App\Http\Controllers\Api\InventoryItemController;
+use App\Http\Controllers\Api\StockCategoryController;
 use App\Http\Controllers\Api\SubscriptionController;
 use App\Http\Controllers\Api\TransactionController;
 use App\Http\Controllers\Api\WorkspaceController;
@@ -61,5 +63,11 @@ Route::middleware('auth:sanctum')->group(function (): void {
         Route::apiResource('fixed-bills', FixedBillController::class);
         Route::post('/fixed-bills/{fixed_bill}/pay', [FixedBillController::class, 'pay']);
         Route::post('/fixed-bills/{fixed_bill}/unpay', [FixedBillController::class, 'unpay']);
+
+        // Stock Categories & Inventory Items
+        Route::apiResource('stock-categories', StockCategoryController::class);
+        Route::apiResource('inventory-items', InventoryItemController::class);
+        Route::post('/inventory-items/{inventory_item}/consume', [InventoryItemController::class, 'consume']);
+        Route::post('/inventory-items/{inventory_item}/purchases', [InventoryItemController::class, 'recordPurchase']);
     });
 });

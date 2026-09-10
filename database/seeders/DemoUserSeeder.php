@@ -48,6 +48,7 @@ class DemoUserSeeder extends Seeder
 
         // 3. Seed Categories for Workspace
         CategorySeeder::seedForWorkspace($workspace);
+        StockCategorySeeder::seedForWorkspace($workspace);
 
         $salaryCat = Category::where('workspace_id', $workspace->id)->where('name', 'Salary')->first();
         $housingCat = Category::where('workspace_id', $workspace->id)->where('name', 'Housing')->first();

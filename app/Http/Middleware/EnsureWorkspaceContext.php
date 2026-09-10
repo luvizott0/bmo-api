@@ -6,6 +6,7 @@ use App\Enums\WorkspaceRole;
 use App\Models\Workspace;
 use Closure;
 use Database\Seeders\CategorySeeder;
+use Database\Seeders\StockCategorySeeder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -51,6 +52,7 @@ class EnsureWorkspaceContext
                 ]);
 
                 CategorySeeder::seedForWorkspace($workspace);
+                StockCategorySeeder::seedForWorkspace($workspace);
             }
         }
 

@@ -69,4 +69,14 @@ class Workspace extends Model
     {
         return $this->hasMany(FixedBill::class);
     }
+
+    public function stockCategories(): HasMany
+    {
+        return $this->hasMany(StockCategory::class);
+    }
+
+    public function inventoryItems(): HasMany
+    {
+        return $this->hasMany(InventoryItem::class);
+    }
 }
