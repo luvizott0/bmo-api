@@ -43,6 +43,8 @@ fi
 if [ "${AUTORUN_LARAVEL_MIGRATION:-true}" = "true" ]; then
     echo "==> Executando migrações do banco de dados..."
     php artisan migrate --force || echo "==> Aviso: Falha ao executar migrações ou banco indisponível no momento."
+    echo "==> Garantindo existência do usuário admin..."
+    php artisan db:seed --class=UserSeeder --force || echo "==> Aviso: Falha ao executar UserSeeder."
 fi
 
 # Otimizar caches se em ambiente de produção
