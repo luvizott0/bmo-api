@@ -32,6 +32,8 @@ class UpdateCreditCardRequest extends FormRequest
             'brand' => ['nullable', 'string', 'max:50'],
             'color_hex' => ['nullable', 'string', 'max:7'],
             'is_active' => ['sometimes', 'boolean'],
+            'user_id' => ['nullable', 'integer', 'exists:users,id'],
+            'is_shared' => ['sometimes', 'boolean'],
         ];
     }
 }

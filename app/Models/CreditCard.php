@@ -13,7 +13,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-#[Fillable(['workspace_id', 'bank_account_id', 'name', 'type', 'total_limit', 'daily_limit', 'closing_day', 'due_day', 'brand', 'color_hex', 'is_active'])]
+#[Fillable(['workspace_id', 'user_id', 'bank_account_id', 'name', 'type', 'total_limit', 'daily_limit', 'closing_day', 'due_day', 'brand', 'color_hex', 'is_active', 'is_shared'])]
 class CreditCard extends Model
 {
     /** @use HasFactory<CreditCardFactory> */
@@ -29,6 +29,7 @@ class CreditCard extends Model
             'closing_day' => 'integer',
             'due_day' => 'integer',
             'is_active' => 'boolean',
+            'is_shared' => 'boolean',
         ];
     }
 
@@ -125,6 +126,11 @@ class CreditCard extends Model
     public function workspace(): BelongsTo
     {
         return $this->belongsTo(Workspace::class);
+    }
+
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
     }
 
     public function bankAccount(): BelongsTo

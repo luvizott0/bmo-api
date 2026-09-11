@@ -10,7 +10,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-#[Fillable(['workspace_id', 'bank_name', 'name', 'type', 'current_balance', 'color_hex', 'is_active', 'is_primary'])]
+#[Fillable(['workspace_id', 'user_id', 'bank_name', 'name', 'type', 'current_balance', 'color_hex', 'is_active', 'is_primary', 'is_shared'])]
 class BankAccount extends Model
 {
     /** @use HasFactory<BankAccountFactory> */
@@ -23,12 +23,18 @@ class BankAccount extends Model
             'current_balance' => 'decimal:2',
             'is_active' => 'boolean',
             'is_primary' => 'boolean',
+            'is_shared' => 'boolean',
         ];
     }
 
     public function workspace(): BelongsTo
     {
         return $this->belongsTo(Workspace::class);
+    }
+
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
     }
 
     public function transactions(): HasMany

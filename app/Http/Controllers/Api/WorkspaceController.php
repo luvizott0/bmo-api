@@ -76,6 +76,30 @@ class WorkspaceController extends Controller
         return (new WorkspaceResource($workspace))->response();
     }
 
+    /**
+     * List members of the specified workspace.
+     */
+    public function members(Request $request, Workspace $workspace): JsonResponse
+    {
+        $this->ensureMember($request, $workspace);
+
+        $members = $workspace->members()
+            ->select('users.id', 'users.name', 'users.email')
+            ->get()
+            ->map(function ($user): array {
+                return [
+                    'id' => $user->id,
+                    'name' => $user->name,
+                    'email' => $user->email,
+                    'role' => $user->pivot?->role?->value ?? ($user->pivot?->role ?? 'member'),
+                ];
+            });
+
+        return response()->json([
+            'data' => $members,
+        ]);
+    }
+
     private function ensureMember(Request $request, Workspace $workspace): void
     {
         if (! $request->user()->workspaces()->where('workspaces.id', $workspace->id)->exists()) {

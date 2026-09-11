@@ -20,8 +20,15 @@ class BankAccountController extends Controller
      */
     public function index(Request $request): AnonymousResourceCollection
     {
+        $user = $request->user();
         $accounts = $request->workspace()
             ->bankAccounts()
+            ->with('user')
+            ->where(function ($query) use ($user): void {
+                $query->where('is_shared', true)
+                    ->orWhere('user_id', $user->id)
+                    ->orWhereNull('user_id');
+            })
             ->orderByDesc('is_primary')
             ->orderBy('name')
             ->get();
@@ -45,9 +52,13 @@ class BankAccountController extends Controller
 
             $data = $request->validated();
             $data['is_primary'] = $isPrimary;
+            $data['user_id'] = $request->input('user_id') ?? $request->user()->id;
+            $data['is_shared'] = $request->boolean('is_shared', true);
 
             return $workspace->bankAccounts()->create($data);
         });
+
+        $account->load('user');
 
         return (new BankAccountResource($account))
             ->response()
@@ -60,6 +71,8 @@ class BankAccountController extends Controller
     public function show(Request $request, BankAccount $bankAccount): JsonResponse
     {
         $this->ensureWorkspaceAccount($request, $bankAccount);
+
+        $bankAccount->load('user');
 
         return (new BankAccountResource($bankAccount))->response();
     }
@@ -76,10 +89,15 @@ class BankAccountController extends Controller
                 $request->workspace()->bankAccounts()->where('id', '!=', $bankAccount->id)->update(['is_primary' => false]);
             }
 
-            $bankAccount->update($request->validated());
+            $data = $request->validated();
+            if ($request->has('is_shared')) {
+                $data['is_shared'] = $request->boolean('is_shared');
+            }
+
+            $bankAccount->update($data);
         });
 
-        return (new BankAccountResource($bankAccount->fresh()))->response();
+        return (new BankAccountResource($bankAccount->fresh(['user'])))->response();
     }
 
     /**

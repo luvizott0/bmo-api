@@ -24,6 +24,13 @@ class BankAccountResource extends JsonResource
             'color_hex' => $this->color_hex,
             'is_active' => $this->is_active,
             'is_primary' => (bool) $this->is_primary,
+            'user_id' => $this->user_id,
+            'is_shared' => $this->is_shared !== null ? (bool) $this->is_shared : true,
+            'user' => $this->user ? [
+                'id' => $this->user->id,
+                'name' => $this->user->name,
+                'email' => $this->user->email,
+            ] : null,
             'created_at' => $this->created_at?->toISOString(),
         ];
     }

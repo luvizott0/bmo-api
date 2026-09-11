@@ -35,6 +35,7 @@ Route::middleware('auth:sanctum')->group(function (): void {
 
     // Workspaces Management
     Route::apiResource('workspaces', WorkspaceController::class)->except(['destroy']);
+    Route::get('/workspaces/{workspace}/members', [WorkspaceController::class, 'members']);
     Route::get('/workspaces/{workspace}/invitations', [WorkspaceInvitationController::class, 'index']);
     Route::post('/workspaces/{workspace}/invitations', [WorkspaceInvitationController::class, 'store']);
 

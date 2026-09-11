@@ -31,6 +31,8 @@ class StoreBankAccountRequest extends FormRequest
             'color_hex' => ['nullable', 'string', 'max:7'],
             'is_active' => ['nullable', 'boolean'],
             'is_primary' => ['nullable', 'boolean'],
+            'user_id' => ['nullable', 'integer', 'exists:users,id'],
+            'is_shared' => ['nullable', 'boolean'],
         ];
     }
 }

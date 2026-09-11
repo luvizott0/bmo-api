@@ -18,9 +18,15 @@ class CreditCardController extends Controller
      */
     public function index(Request $request): AnonymousResourceCollection
     {
+        $user = $request->user();
         $cards = $request->workspace()
             ->creditCards()
-            ->with('bankAccount')
+            ->with(['bankAccount', 'user'])
+            ->where(function ($query) use ($user): void {
+                $query->where('is_shared', true)
+                    ->orWhere('user_id', $user->id)
+                    ->orWhereNull('user_id');
+            })
             ->orderBy('name')
             ->get();
 
@@ -32,11 +38,15 @@ class CreditCardController extends Controller
      */
     public function store(StoreCreditCardRequest $request): JsonResponse
     {
+        $data = $request->validated();
+        $data['user_id'] = $request->input('user_id') ?? $request->user()->id;
+        $data['is_shared'] = $request->boolean('is_shared', true);
+
         $card = $request->workspace()
             ->creditCards()
-            ->create($request->validated());
+            ->create($data);
 
-        $card->load('bankAccount');
+        $card->load(['bankAccount', 'user']);
 
         return (new CreditCardResource($card))
             ->response()
@@ -50,7 +60,7 @@ class CreditCardController extends Controller
     {
         $this->ensureWorkspaceCard($request, $creditCard);
 
-        $creditCard->load('bankAccount');
+        $creditCard->load(['bankAccount', 'user']);
 
         return (new CreditCardResource($creditCard))->response();
     }
@@ -62,8 +72,13 @@ class CreditCardController extends Controller
     {
         $this->ensureWorkspaceCard($request, $creditCard);
 
-        $creditCard->update($request->validated());
-        $creditCard->load('bankAccount');
+        $data = $request->validated();
+        if ($request->has('is_shared')) {
+            $data['is_shared'] = $request->boolean('is_shared');
+        }
+
+        $creditCard->update($data);
+        $creditCard->load(['bankAccount', 'user']);
 
         return (new CreditCardResource($creditCard))->response();
     }
