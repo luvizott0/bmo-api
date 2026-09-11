@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\CreditCardController;
 use App\Http\Controllers\Api\FixedBillController;
 use App\Http\Controllers\Api\InventoryItemController;
 use App\Http\Controllers\Api\StockCategoryController;
+use App\Http\Controllers\Api\StockShareController;
 use App\Http\Controllers\Api\SubscriptionController;
 use App\Http\Controllers\Api\TransactionController;
 use App\Http\Controllers\Api\WorkspaceController;
@@ -72,5 +73,13 @@ Route::middleware('auth:sanctum')->group(function (): void {
         Route::apiResource('inventory-items', InventoryItemController::class);
         Route::post('/inventory-items/{inventory_item}/consume', [InventoryItemController::class, 'consume']);
         Route::post('/inventory-items/{inventory_item}/purchases', [InventoryItemController::class, 'recordPurchase']);
+
+        // Stock Sharing (Single-use link, status, accept, leave)
+        Route::get('/stock-shares/status', [StockShareController::class, 'status']);
+        Route::post('/stock-shares/invite', [StockShareController::class, 'createInvite']);
+        Route::delete('/stock-shares/invite', [StockShareController::class, 'revokeInvite']);
+        Route::get('/stock-shares/invitations/{token}', [StockShareController::class, 'showInvite']);
+        Route::post('/stock-shares/invitations/{token}/accept', [StockShareController::class, 'acceptInvite']);
+        Route::post('/stock-shares/leave', [StockShareController::class, 'leave']);
     });
 });

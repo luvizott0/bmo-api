@@ -19,7 +19,7 @@ class InventoryItemController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $workspace = $request->workspace();
+        $workspace = $request->workspace()->effectiveStockWorkspace();
         $today = Carbon::today()->toDateString();
         $in30Days = Carbon::today()->addDays(30)->toDateString();
 
@@ -125,7 +125,7 @@ class InventoryItemController extends Controller
     public function store(StoreInventoryItemRequest $request): JsonResponse
     {
         $data = $request->validated();
-        $workspace = $request->workspace();
+        $workspace = $request->workspace()->effectiveStockWorkspace();
 
         if (! empty($data['stock_category_id'])) {
             $valid = $workspace->stockCategories()->where('id', $data['stock_category_id'])->exists();
@@ -183,7 +183,7 @@ class InventoryItemController extends Controller
     {
         $this->ensureWorkspaceItem($request, $inventoryItem);
         $data = $request->validated();
-        $workspace = $request->workspace();
+        $workspace = $request->workspace()->effectiveStockWorkspace();
 
         if (! empty($data['stock_category_id'])) {
             $valid = $workspace->stockCategories()->where('id', $data['stock_category_id'])->exists();
@@ -237,7 +237,7 @@ class InventoryItemController extends Controller
     public function recordPurchase(RecordInventoryPurchaseRequest $request, InventoryItem $inventoryItem): JsonResponse
     {
         $this->ensureWorkspaceItem($request, $inventoryItem);
-        $workspace = $request->workspace();
+        $workspace = $request->workspace()->effectiveStockWorkspace();
         $validated = $request->validated();
 
         $qty = (float) $validated['quantity'];
@@ -299,7 +299,7 @@ class InventoryItemController extends Controller
 
     private function ensureWorkspaceItem(Request $request, InventoryItem $inventoryItem): void
     {
-        if ($inventoryItem->workspace_id !== $request->workspace()->id) {
+        if ($inventoryItem->workspace_id !== $request->workspace()->effectiveStockWorkspace()->id) {
             abort(404, 'Inventory item not found.');
         }
     }

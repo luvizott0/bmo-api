@@ -19,6 +19,7 @@ class StockCategoryController extends Controller
     public function index(Request $request): AnonymousResourceCollection
     {
         $categories = $request->workspace()
+            ->effectiveStockWorkspace()
             ->stockCategories()
             ->withCount('items')
             ->orderBy('name')
@@ -32,7 +33,7 @@ class StockCategoryController extends Controller
      */
     public function store(StoreStockCategoryRequest $request): JsonResponse
     {
-        $category = $request->workspace()->stockCategories()->create($request->validated());
+        $category = $request->workspace()->effectiveStockWorkspace()->stockCategories()->create($request->validated());
 
         return (new StockCategoryResource($category))
             ->response()
@@ -77,7 +78,7 @@ class StockCategoryController extends Controller
 
     private function ensureWorkspaceCategory(Request $request, StockCategory $stockCategory): void
     {
-        if ($stockCategory->workspace_id !== $request->workspace()->id) {
+        if ($stockCategory->workspace_id !== $request->workspace()->effectiveStockWorkspace()->id) {
             abort(404, 'Stock category not found.');
         }
     }

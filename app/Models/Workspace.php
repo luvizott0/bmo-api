@@ -11,7 +11,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 
-#[Fillable(['name', 'owner_id', 'is_personal'])]
+#[Fillable(['name', 'owner_id', 'is_personal', 'stock_workspace_id'])]
 class Workspace extends Model
 {
     /** @use HasFactory<WorkspaceFactory> */
@@ -89,5 +89,28 @@ class Workspace extends Model
     public function inventoryItems(): HasMany
     {
         return $this->hasMany(InventoryItem::class);
+    }
+
+    public function stockWorkspace(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'stock_workspace_id');
+    }
+
+    public function sharedStockWorkspaces(): HasMany
+    {
+        return $this->hasMany(self::class, 'stock_workspace_id');
+    }
+
+    public function stockShareInvitations(): HasMany
+    {
+        return $this->hasMany(StockShareInvitation::class);
+    }
+
+    /**
+     * Get the effective workspace that owns and stores inventory for this workspace.
+     */
+    public function effectiveStockWorkspace(): self
+    {
+        return $this->stock_workspace_id ? ($this->stockWorkspace ?? $this) : $this;
     }
 }
