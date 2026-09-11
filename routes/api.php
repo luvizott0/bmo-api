@@ -45,6 +45,7 @@ Route::middleware('auth:sanctum')->group(function (): void {
         // Bank Accounts
         Route::apiResource('bank-accounts', BankAccountController::class);
         Route::post('/bank-accounts/{bank_account}/adjust-balance', [BankAccountController::class, 'adjustBalance']);
+        Route::post('/bank-accounts/{bank_account}/set-primary', [BankAccountController::class, 'setPrimary']);
 
         // Credit Cards
         Route::get('/credit-cards/{credit_card}/monthly-limits', [CreditCardController::class, 'monthlyLimits']);
@@ -55,6 +56,8 @@ Route::middleware('auth:sanctum')->group(function (): void {
 
         // Subscriptions & Split Members
         Route::apiResource('subscriptions', SubscriptionController::class);
+        Route::post('/subscriptions/{subscription}/pay', [SubscriptionController::class, 'pay']);
+        Route::post('/subscriptions/{subscription}/unpay', [SubscriptionController::class, 'unpay']);
         Route::post('/subscriptions/{subscription}/members', [SubscriptionController::class, 'addMember']);
         Route::delete('/subscriptions/{subscription}/members/{member}', [SubscriptionController::class, 'removeMember']);
         Route::post('/subscriptions/{subscription}/members/{member}/payments', [SubscriptionController::class, 'recordPayment']);

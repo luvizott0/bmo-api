@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 #[Fillable(['name', 'owner_id', 'is_personal'])]
 class Workspace extends Model
@@ -48,6 +49,16 @@ class Workspace extends Model
     public function bankAccounts(): HasMany
     {
         return $this->hasMany(BankAccount::class);
+    }
+
+    public function primaryBankAccount(): HasOne
+    {
+        return $this->hasOne(BankAccount::class)->where('is_primary', true);
+    }
+
+    public function getPrimaryBankAccount(): ?BankAccount
+    {
+        return $this->bankAccounts()->where('is_primary', true)->first() ?? $this->bankAccounts()->first();
     }
 
     public function creditCards(): HasMany

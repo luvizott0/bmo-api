@@ -2,6 +2,9 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\SubscriptionPaymentStatus;
+use App\Enums\TransactionStatus;
+use App\Enums\TransactionType;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Api\AddSubscriptionMemberRequest;
 use App\Http\Requests\Api\RecordMemberPaymentRequest;
@@ -13,6 +16,9 @@ use App\Http\Resources\SubscriptionResource;
 use App\Models\Subscription;
 use App\Models\SubscriptionMember;
 use App\Models\SubscriptionPayment;
+use App\Models\Transaction;
+use App\Services\SubscriptionService;
+use App\Services\TransactionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -20,14 +26,21 @@ use Illuminate\Support\Facades\DB;
 
 class SubscriptionController extends Controller
 {
+    public function __construct(
+        private readonly SubscriptionService $subscriptionService,
+        private readonly TransactionService $transactionService
+    ) {}
+
     /**
      * Display a listing of subscriptions for the active workspace.
      */
     public function index(Request $request): AnonymousResourceCollection
     {
+        $this->subscriptionService->processDueSubscriptions($request->workspace());
+
         $subscriptions = $request->workspace()
             ->subscriptions()
-            ->with(['members.payments', 'creditCard', 'bankAccount', 'category'])
+            ->with(['members.payments', 'creditCard', 'bankAccount', 'category', 'transactions'])
             ->orderBy('billing_day')
             ->get();
 
@@ -56,7 +69,7 @@ class SubscriptionController extends Controller
             return $subscription;
         });
 
-        $subscription->load(['members.payments', 'creditCard', 'bankAccount', 'category']);
+        $subscription->load(['members.payments', 'creditCard', 'bankAccount', 'category', 'transactions']);
 
         return (new SubscriptionResource($subscription))
             ->response()
@@ -70,7 +83,7 @@ class SubscriptionController extends Controller
     {
         $this->ensureWorkspaceSubscription($request, $subscription);
 
-        $subscription->load(['members.payments', 'creditCard', 'bankAccount', 'category']);
+        $subscription->load(['members.payments', 'creditCard', 'bankAccount', 'category', 'transactions']);
 
         return (new SubscriptionResource($subscription))->response();
     }
@@ -83,7 +96,7 @@ class SubscriptionController extends Controller
         $this->ensureWorkspaceSubscription($request, $subscription);
 
         $subscription->update($request->validated());
-        $subscription->load(['members.payments', 'creditCard', 'bankAccount', 'category']);
+        $subscription->load(['members.payments', 'creditCard', 'bankAccount', 'category', 'transactions']);
 
         return (new SubscriptionResource($subscription))->response();
     }
@@ -136,6 +149,7 @@ class SubscriptionController extends Controller
 
     /**
      * Record or update payment status for a member in a specific billing cycle (e.g. 2026-09).
+     * If marked as paid, credits the primary bank account. If marked as pending, reverts the credit.
      */
     public function recordPayment(RecordMemberPaymentRequest $request, Subscription $subscription, SubscriptionMember $member): JsonResponse
     {
@@ -147,8 +161,15 @@ class SubscriptionController extends Controller
 
         $referenceMonth = $request->input('reference_month');
         $status = $request->input('status');
-        $amount = $request->input('amount', $member->installment_amount);
+        $amount = (float) $request->input('amount', $member->installment_amount);
         $paymentDate = $request->input('payment_date', ($status === 'paid' ? now()->toDateString() : null));
+
+        $previousPayment = SubscriptionPayment::where('subscription_member_id', $member->id)
+            ->where('reference_month', $referenceMonth)
+            ->first();
+
+        $wasPaid = $previousPayment && ($previousPayment->status === SubscriptionPaymentStatus::Paid || $previousPayment->status?->value === 'paid' || $previousPayment->status === 'paid');
+        $isNowPaid = $status === SubscriptionPaymentStatus::Paid->value || $status === 'paid';
 
         $payment = SubscriptionPayment::updateOrCreate(
             [
@@ -162,7 +183,129 @@ class SubscriptionController extends Controller
             ]
         );
 
+        // When a family member payment is confirmed, add to primary bank account
+        if ($isNowPaid && ! $wasPaid) {
+            $primaryAccount = $subscription->workspace->getPrimaryBankAccount();
+            if ($primaryAccount) {
+                $this->transactionService->create([
+                    'workspace_id' => $subscription->workspace_id,
+                    'created_by_user_id' => $request->user()?->id,
+                    'type' => TransactionType::Income,
+                    'amount' => $amount,
+                    'occurred_at' => $paymentDate ?? now()->toDateString(),
+                    'status' => TransactionStatus::Paid,
+                    'description' => "Rateio recebido: {$subscription->service_name} ({$member->name})",
+                    'bank_account_id' => $primaryAccount->id,
+                    'category_id' => $subscription->category_id,
+                    'subscription_id' => $subscription->id,
+                    'notes' => "Rateio recebido ciclo {$referenceMonth}",
+                ]);
+            }
+        } elseif (! $isNowPaid && $wasPaid) {
+            // Revert credit from primary bank account
+            $incomeTx = Transaction::where('subscription_id', $subscription->id)
+                ->where('type', TransactionType::Income)
+                ->where('description', 'like', "%{$member->name}%")
+                ->where('occurred_at', 'like', "{$referenceMonth}%")
+                ->latest('occurred_at')
+                ->first();
+
+            if ($incomeTx) {
+                $this->transactionService->delete($incomeTx);
+            }
+        }
+
         return (new SubscriptionPaymentResource($payment))->response();
+    }
+
+    /**
+     * Mark an individual subscription as paid for the cycle and apply financial impact.
+     */
+    public function pay(Request $request, Subscription $subscription): JsonResponse
+    {
+        $this->ensureWorkspaceSubscription($request, $subscription);
+
+        $amount = (float) $request->input('amount', $subscription->total_amount);
+        $paymentDate = $request->input('payment_date', now()->toDateString());
+        $referenceMonth = substr($paymentDate, 0, 7);
+        $bankAccountId = $request->input('bank_account_id', $subscription->bank_account_id);
+        $creditCardId = $request->input('credit_card_id', $subscription->credit_card_id);
+
+        if (! $bankAccountId && ! $creditCardId) {
+            $primaryAccount = $subscription->workspace->getPrimaryBankAccount();
+            if ($primaryAccount) {
+                $bankAccountId = $primaryAccount->id;
+            }
+        }
+
+        $existing = $subscription->transactions()
+            ->where('occurred_at', 'like', "{$referenceMonth}%")
+            ->latest('occurred_at')
+            ->first();
+
+        if ($existing) {
+            $transaction = $this->transactionService->update($existing, [
+                'amount' => $amount,
+                'occurred_at' => $paymentDate,
+                'bank_account_id' => $bankAccountId,
+                'credit_card_id' => $creditCardId,
+                'status' => TransactionStatus::Paid,
+            ]);
+        } else {
+            $transaction = $this->transactionService->create([
+                'workspace_id' => $subscription->workspace_id,
+                'created_by_user_id' => $request->user()?->id,
+                'subscription_id' => $subscription->id,
+                'category_id' => $subscription->category_id,
+                'type' => TransactionType::Expense,
+                'amount' => $amount,
+                'occurred_at' => $paymentDate,
+                'status' => TransactionStatus::Paid,
+                'description' => 'Assinatura: '.$subscription->service_name,
+                'bank_account_id' => $bankAccountId,
+                'credit_card_id' => $creditCardId,
+                'notes' => "Pagamento assinatura ciclo {$referenceMonth}",
+            ]);
+        }
+
+        $subscription->load(['members.payments', 'creditCard', 'bankAccount', 'category', 'transactions']);
+
+        return response()->json([
+            'message' => 'Subscription paid successfully.',
+            'subscription' => new SubscriptionResource($subscription),
+        ]);
+    }
+
+    /**
+     * Mark an individual subscription as unpaid for the cycle and revert balance.
+     */
+    public function unpay(Request $request, Subscription $subscription): JsonResponse
+    {
+        $this->ensureWorkspaceSubscription($request, $subscription);
+
+        $referenceMonth = $request->input('reference_month', now()->format('Y-m'));
+
+        $transaction = $subscription->transactions()
+            ->where('occurred_at', 'like', "{$referenceMonth}%")
+            ->latest('occurred_at')
+            ->first();
+
+        if ($transaction) {
+            if ($transaction->credit_card_id && $subscription->credit_card_id) {
+                $this->transactionService->update($transaction, [
+                    'status' => TransactionStatus::Pending,
+                ]);
+            } else {
+                $this->transactionService->delete($transaction);
+            }
+        }
+
+        $subscription->load(['members.payments', 'creditCard', 'bankAccount', 'category', 'transactions']);
+
+        return response()->json([
+            'message' => 'Subscription marked as unpaid.',
+            'subscription' => new SubscriptionResource($subscription),
+        ]);
     }
 
     private function ensureWorkspaceSubscription(Request $request, Subscription $subscription): void

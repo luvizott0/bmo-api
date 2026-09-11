@@ -11,6 +11,7 @@ use App\Models\BankAccount;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Support\Facades\DB;
 
 class BankAccountController extends Controller
 {
@@ -21,6 +22,7 @@ class BankAccountController extends Controller
     {
         $accounts = $request->workspace()
             ->bankAccounts()
+            ->orderByDesc('is_primary')
             ->orderBy('name')
             ->get();
 
@@ -32,9 +34,20 @@ class BankAccountController extends Controller
      */
     public function store(StoreBankAccountRequest $request): JsonResponse
     {
-        $account = $request->workspace()
-            ->bankAccounts()
-            ->create($request->validated());
+        $workspace = $request->workspace();
+        $isFirst = ! $workspace->bankAccounts()->exists();
+        $isPrimary = $request->boolean('is_primary') || $isFirst;
+
+        $account = DB::transaction(function () use ($workspace, $request, $isPrimary): BankAccount {
+            if ($isPrimary) {
+                $workspace->bankAccounts()->update(['is_primary' => false]);
+            }
+
+            $data = $request->validated();
+            $data['is_primary'] = $isPrimary;
+
+            return $workspace->bankAccounts()->create($data);
+        });
 
         return (new BankAccountResource($account))
             ->response()
@@ -58,9 +71,15 @@ class BankAccountController extends Controller
     {
         $this->ensureWorkspaceAccount($request, $bankAccount);
 
-        $bankAccount->update($request->validated());
+        DB::transaction(function () use ($request, $bankAccount): void {
+            if ($request->has('is_primary') && $request->boolean('is_primary')) {
+                $request->workspace()->bankAccounts()->where('id', '!=', $bankAccount->id)->update(['is_primary' => false]);
+            }
 
-        return (new BankAccountResource($bankAccount))->response();
+            $bankAccount->update($request->validated());
+        });
+
+        return (new BankAccountResource($bankAccount->fresh()))->response();
     }
 
     /**
@@ -70,11 +89,38 @@ class BankAccountController extends Controller
     {
         $this->ensureWorkspaceAccount($request, $bankAccount);
 
-        $bankAccount->delete();
+        $wasPrimary = (bool) $bankAccount->is_primary;
+        $workspace = $request->workspace();
+
+        DB::transaction(function () use ($bankAccount, $wasPrimary, $workspace): void {
+            $bankAccount->delete();
+
+            if ($wasPrimary) {
+                $nextAccount = $workspace->bankAccounts()->first();
+                if ($nextAccount) {
+                    $nextAccount->update(['is_primary' => true]);
+                }
+            }
+        });
 
         return response()->json([
             'message' => 'Bank account deleted successfully.',
         ]);
+    }
+
+    /**
+     * Set the specified bank account as the primary account for the workspace.
+     */
+    public function setPrimary(Request $request, BankAccount $bankAccount): JsonResponse
+    {
+        $this->ensureWorkspaceAccount($request, $bankAccount);
+
+        DB::transaction(function () use ($request, $bankAccount): void {
+            $request->workspace()->bankAccounts()->update(['is_primary' => false]);
+            $bankAccount->update(['is_primary' => true]);
+        });
+
+        return (new BankAccountResource($bankAccount->fresh()))->response();
     }
 
     /**

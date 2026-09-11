@@ -107,3 +107,28 @@ test('user can adjust bank account balance manually', function () {
 
     expect((float) $account->fresh()->current_balance)->toBe(750.25);
 });
+
+test('first bank account created is automatically primary and user can switch primary account', function () {
+    $first = BankAccount::factory()->create([
+        'workspace_id' => $this->workspace->id,
+        'is_primary' => true,
+    ]);
+
+    $second = BankAccount::factory()->create([
+        'workspace_id' => $this->workspace->id,
+        'is_primary' => false,
+    ]);
+
+    expect($first->fresh()->is_primary)->toBeTrue();
+    expect($second->fresh()->is_primary)->toBeFalse();
+
+    // Set second as primary
+    $response = $this->actingAs($this->user)
+        ->postJson("/api/bank-accounts/{$second->id}/set-primary");
+
+    $response->assertOk()
+        ->assertJsonPath('data.is_primary', true);
+
+    expect($second->fresh()->is_primary)->toBeTrue();
+    expect($first->fresh()->is_primary)->toBeFalse();
+});

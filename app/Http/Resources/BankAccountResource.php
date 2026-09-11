@@ -23,6 +23,7 @@ class BankAccountResource extends JsonResource
             'current_balance' => (float) $this->current_balance,
             'color_hex' => $this->color_hex,
             'is_active' => $this->is_active,
+            'is_primary' => (bool) $this->is_primary,
             'created_at' => $this->created_at?->toISOString(),
         ];
     }

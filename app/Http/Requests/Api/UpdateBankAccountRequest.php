@@ -29,6 +29,7 @@ class UpdateBankAccountRequest extends FormRequest
             'type' => ['sometimes', 'required', new Enum(BankAccountType::class)],
             'color_hex' => ['nullable', 'string', 'max:7'],
             'is_active' => ['sometimes', 'boolean'],
+            'is_primary' => ['sometimes', 'boolean'],
         ];
     }
 }

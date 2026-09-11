@@ -30,6 +30,7 @@ class StoreBankAccountRequest extends FormRequest
             'current_balance' => ['nullable', 'numeric'],
             'color_hex' => ['nullable', 'string', 'max:7'],
             'is_active' => ['nullable', 'boolean'],
+            'is_primary' => ['nullable', 'boolean'],
         ];
     }
 }

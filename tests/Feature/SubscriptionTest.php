@@ -2,6 +2,8 @@
 
 use App\Enums\SubscriptionPaymentStatus;
 use App\Enums\WorkspaceRole;
+use App\Models\BankAccount;
+use App\Models\CreditCard;
 use App\Models\Subscription;
 use App\Models\SubscriptionMember;
 use App\Models\SubscriptionPayment;
@@ -238,4 +240,114 @@ test('cannot record payment for member belonging to another subscription', funct
         ]);
 
     $response->assertNotFound();
+});
+
+test('user can pay and unpay an individual subscription and balance is updated', function () {
+    $account = BankAccount::factory()->create([
+        'workspace_id' => $this->workspace->id,
+        'current_balance' => 1000.00,
+        'is_primary' => true,
+    ]);
+
+    $subscription = Subscription::factory()->create([
+        'workspace_id' => $this->workspace->id,
+        'service_name' => 'Spotify Individual',
+        'total_amount' => 21.90,
+        'bank_account_id' => $account->id,
+    ]);
+
+    // Pay subscription
+    $response = $this->actingAs($this->user)
+        ->postJson("/api/subscriptions/{$subscription->id}/pay");
+
+    $response->assertOk()
+        ->assertJsonPath('subscription.is_paid', true);
+
+    expect((float) $account->fresh()->current_balance)->toBe(978.10);
+
+    // Unpay subscription
+    $unpayResponse = $this->actingAs($this->user)
+        ->postJson("/api/subscriptions/{$subscription->id}/unpay");
+
+    $unpayResponse->assertOk()
+        ->assertJsonPath('subscription.is_paid', false);
+
+    expect((float) $account->fresh()->current_balance)->toBe(1000.00);
+});
+
+test('marking family member payment as paid credits primary bank account and unpaying reverts balance', function () {
+    $primaryAccount = BankAccount::factory()->create([
+        'workspace_id' => $this->workspace->id,
+        'current_balance' => 500.00,
+        'is_primary' => true,
+    ]);
+
+    $subscription = Subscription::factory()->create([
+        'workspace_id' => $this->workspace->id,
+        'service_name' => 'YouTube Premium Família',
+        'total_amount' => 41.90,
+    ]);
+
+    $member = SubscriptionMember::factory()->create([
+        'subscription_id' => $subscription->id,
+        'name' => 'Lucas',
+        'installment_amount' => 15.00,
+    ]);
+
+    $currentMonth = now()->format('Y-m');
+
+    // Mark member as paid
+    $response = $this->actingAs($this->user)
+        ->postJson("/api/subscriptions/{$subscription->id}/members/{$member->id}/payments", [
+            'reference_month' => $currentMonth,
+            'status' => 'paid',
+            'amount' => 15.00,
+        ]);
+
+    $response->assertCreated();
+
+    // Primary account should have +15.00
+    expect((float) $primaryAccount->fresh()->current_balance)->toBe(515.00);
+
+    // Mark back to pending
+    $updateResponse = $this->actingAs($this->user)
+        ->postJson("/api/subscriptions/{$subscription->id}/members/{$member->id}/payments", [
+            'reference_month' => $currentMonth,
+            'status' => 'pending',
+            'amount' => 15.00,
+        ]);
+
+    $updateResponse->assertOk();
+
+    // Primary account balance should revert to 500.00
+    expect((float) $primaryAccount->fresh()->current_balance)->toBe(500.00);
+});
+
+test('subscription with credit card automatically discounts card available limit on billing day', function () {
+    $card = CreditCard::factory()->create([
+        'workspace_id' => $this->workspace->id,
+        'total_limit' => 2000.00,
+    ]);
+
+    expect((float) $card->available_limit)->toBe(2000.00);
+
+    $todayDay = (int) now()->day;
+
+    $subscription = Subscription::factory()->create([
+        'workspace_id' => $this->workspace->id,
+        'service_name' => 'Netflix 4K',
+        'total_amount' => 55.90,
+        'credit_card_id' => $card->id,
+        'billing_day' => $todayDay,
+        'is_active' => true,
+    ]);
+
+    // Listing subscriptions triggers processDueSubscriptions
+    $response = $this->actingAs($this->user)
+        ->getJson('/api/subscriptions');
+
+    $response->assertOk();
+
+    // Available limit should now be discounted by 55.90
+    expect((float) $card->fresh()->available_limit)->toBe(1944.10);
 });
