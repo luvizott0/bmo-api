@@ -31,6 +31,12 @@ class UpdateSubscriptionRequest extends FormRequest
             'category_id' => ['nullable', 'integer', 'exists:categories,id'],
             'is_active' => ['sometimes', 'boolean'],
             'notes' => ['nullable', 'string'],
+            'members' => ['nullable', 'array'],
+            'members.*.id' => ['nullable', 'integer'],
+            'members.*.name' => ['required_with:members', 'string', 'max:150'],
+            'members.*.installment_amount' => ['required_with:members', 'numeric', 'min:0.01'],
+            'members.*.contact' => ['nullable', 'string', 'max:150'],
+            'members.*.user_id' => ['nullable', 'integer', 'exists:users,id'],
         ];
     }
 }

@@ -95,7 +95,70 @@ class SubscriptionController extends Controller
     {
         $this->ensureWorkspaceSubscription($request, $subscription);
 
-        $subscription->update($request->validated());
+        DB::transaction(function () use ($request, $subscription): void {
+            $subscriptionData = $request->safe()->except(['members']);
+            $subscription->update($subscriptionData);
+
+            if ($request->has('members')) {
+                $submittedMembers = $request->input('members') ?? [];
+                $keptMemberIds = [];
+
+                foreach ($submittedMembers as $memberData) {
+                    if (! empty($memberData['id'])) {
+                        $member = $subscription->members()->find($memberData['id']);
+                        if ($member) {
+                            $member->update([
+                                'name' => $memberData['name'],
+                                'installment_amount' => $memberData['installment_amount'],
+                                'contact' => $memberData['contact'] ?? null,
+                                'user_id' => $memberData['user_id'] ?? null,
+                            ]);
+                            $keptMemberIds[] = $member->id;
+
+                            continue;
+                        }
+                    }
+
+                    $newMember = $subscription->members()->create([
+                        'name' => $memberData['name'],
+                        'installment_amount' => $memberData['installment_amount'],
+                        'contact' => $memberData['contact'] ?? null,
+                        'user_id' => $memberData['user_id'] ?? null,
+                    ]);
+                    $keptMemberIds[] = $newMember->id;
+                }
+
+                $subscription->members()->whereNotIn('id', $keptMemberIds)->delete();
+            }
+
+            // If payment method, amount or service name changed, update any pending transaction in the current cycle
+            $currentMonth = now()->format('Y-m');
+            $pendingTransaction = $subscription->transactions()
+                ->where('status', TransactionStatus::Pending)
+                ->where('occurred_at', 'like', "{$currentMonth}%")
+                ->latest('occurred_at')
+                ->first();
+
+            if ($pendingTransaction) {
+                $updateData = [];
+                if ($request->has('credit_card_id')) {
+                    $updateData['credit_card_id'] = $subscription->credit_card_id;
+                }
+                if ($request->has('bank_account_id')) {
+                    $updateData['bank_account_id'] = $subscription->bank_account_id;
+                }
+                if ($request->has('total_amount')) {
+                    $updateData['amount'] = $subscription->total_amount;
+                }
+                if ($request->has('service_name')) {
+                    $updateData['description'] = 'Assinatura: '.$subscription->service_name;
+                }
+                if (! empty($updateData)) {
+                    $this->transactionService->update($pendingTransaction, $updateData);
+                }
+            }
+        });
+
         $subscription->load(['members.payments', 'creditCard', 'bankAccount', 'category', 'transactions']);
 
         return (new SubscriptionResource($subscription))->response();
