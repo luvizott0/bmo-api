@@ -34,6 +34,9 @@ RUN composer install \
 # Copiar restante do código da aplicação
 COPY . .
 
+# Preservar migrações e seeders para sincronização com volumes montados
+RUN cp -r database /var/www/html/database_src
+
 # Finalizar autoload e descoberta de pacotes do Laravel
 RUN composer dump-autoload --optimize --no-dev && \
     php artisan package:discover --ansi

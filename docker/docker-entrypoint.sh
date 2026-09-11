@@ -14,6 +14,14 @@ if [ "$DB_CONN" = "sqlite" ]; then
     fi
 fi
 
+# Sincronizar migrações e seeders da versão atual da imagem para o volume database
+if [ -d "/var/www/html/database_src" ]; then
+    echo "==> Sincronizando migrações e seeders da versão atual..."
+    mkdir -p /var/www/html/database/migrations /var/www/html/database/seeders
+    cp -a /var/www/html/database_src/migrations/. /var/www/html/database/migrations/ 2>/dev/null || true
+    cp -a /var/www/html/database_src/seeders/. /var/www/html/database/seeders/ 2>/dev/null || true
+fi
+
 # Garantir estrutura de pastas do storage e bootstrap/cache
 mkdir -p /var/www/html/storage/framework/cache/data \
          /var/www/html/storage/framework/sessions \
