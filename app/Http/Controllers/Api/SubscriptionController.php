@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers\Api;
 
-use App\Enums\SubscriptionPaymentStatus;
 use App\Enums\TransactionStatus;
 use App\Enums\TransactionType;
 use App\Http\Controllers\Controller;
@@ -15,7 +14,6 @@ use App\Http\Resources\SubscriptionPaymentResource;
 use App\Http\Resources\SubscriptionResource;
 use App\Models\Subscription;
 use App\Models\SubscriptionMember;
-use App\Models\SubscriptionPayment;
 use App\Models\Transaction;
 use App\Services\SubscriptionService;
 use App\Services\TransactionService;
@@ -227,56 +225,14 @@ class SubscriptionController extends Controller
         $amount = (float) $request->input('amount', $member->installment_amount);
         $paymentDate = $request->input('payment_date', ($status === 'paid' ? now()->toDateString() : null));
 
-        $previousPayment = SubscriptionPayment::where('subscription_member_id', $member->id)
-            ->where('reference_month', $referenceMonth)
-            ->first();
-
-        $wasPaid = $previousPayment && ($previousPayment->status === SubscriptionPaymentStatus::Paid || $previousPayment->status?->value === 'paid' || $previousPayment->status === 'paid');
-        $isNowPaid = $status === SubscriptionPaymentStatus::Paid->value || $status === 'paid';
-
-        $payment = SubscriptionPayment::updateOrCreate(
-            [
-                'subscription_member_id' => $member->id,
-                'reference_month' => $referenceMonth,
-            ],
-            [
-                'amount' => $amount,
-                'status' => $status,
-                'payment_date' => $paymentDate,
-            ]
+        $payment = $this->subscriptionService->recordMemberPayment(
+            member: $member,
+            referenceMonth: $referenceMonth,
+            status: $status,
+            amount: $amount,
+            paymentDate: $paymentDate,
+            userId: $request->user()?->id
         );
-
-        // When a family member payment is confirmed, add to primary bank account
-        if ($isNowPaid && ! $wasPaid) {
-            $primaryAccount = $subscription->workspace->getPrimaryBankAccount();
-            if ($primaryAccount) {
-                $this->transactionService->create([
-                    'workspace_id' => $subscription->workspace_id,
-                    'created_by_user_id' => $request->user()?->id,
-                    'type' => TransactionType::Income,
-                    'amount' => $amount,
-                    'occurred_at' => $paymentDate ?? now()->toDateString(),
-                    'status' => TransactionStatus::Paid,
-                    'description' => "Rateio recebido: {$subscription->service_name} ({$member->name})",
-                    'bank_account_id' => $primaryAccount->id,
-                    'category_id' => $subscription->category_id,
-                    'subscription_id' => $subscription->id,
-                    'notes' => "Rateio recebido ciclo {$referenceMonth}",
-                ]);
-            }
-        } elseif (! $isNowPaid && $wasPaid) {
-            // Revert credit from primary bank account
-            $incomeTx = Transaction::where('subscription_id', $subscription->id)
-                ->where('type', TransactionType::Income)
-                ->where('description', 'like', "%{$member->name}%")
-                ->where('occurred_at', 'like', "{$referenceMonth}%")
-                ->latest('occurred_at')
-                ->first();
-
-            if ($incomeTx) {
-                $this->transactionService->delete($incomeTx);
-            }
-        }
 
         return (new SubscriptionPaymentResource($payment))->response();
     }

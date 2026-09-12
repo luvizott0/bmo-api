@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-#[Fillable(['subscription_member_id', 'reference_month', 'amount', 'status', 'payment_date'])]
+#[Fillable(['subscription_member_id', 'reference_month', 'amount', 'status', 'payment_date', 'pix_e2e_id', 'receipt_metadata'])]
 class SubscriptionPayment extends Model
 {
     /** @use HasFactory<SubscriptionPaymentFactory> */
@@ -21,6 +21,7 @@ class SubscriptionPayment extends Model
             'status' => SubscriptionPaymentStatus::class,
             'amount' => 'decimal:2',
             'payment_date' => 'date',
+            'receipt_metadata' => 'array',
         ];
     }
 

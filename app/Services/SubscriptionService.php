@@ -2,15 +2,22 @@
 
 namespace App\Services;
 
+use App\Enums\SubscriptionPaymentStatus;
 use App\Enums\TransactionStatus;
 use App\Enums\TransactionType;
 use App\Models\Subscription;
+use App\Models\SubscriptionMember;
+use App\Models\SubscriptionPayment;
 use App\Models\Transaction;
 use App\Models\Workspace;
 use Carbon\Carbon;
 
 class SubscriptionService
 {
+    public function __construct(
+        private readonly TransactionService $transactionService
+    ) {}
+
     /**
      * Process due subscriptions for a workspace.
      * On or after the billing day of the current month, active subscriptions
@@ -63,5 +70,87 @@ class SubscriptionService
         }
 
         return $processedCount;
+    }
+
+    /**
+     * Record or update payment status for a member in a specific billing cycle.
+     *
+     * @param  array<string, mixed>|null  $metadata
+     */
+    public function recordMemberPayment(
+        SubscriptionMember $member,
+        string $referenceMonth,
+        string $status,
+        float $amount,
+        ?string $paymentDate = null,
+        ?string $pixE2EId = null,
+        ?array $metadata = null,
+        ?int $userId = null
+    ): SubscriptionPayment {
+        $subscription = $member->subscription;
+        $paymentDate = $paymentDate ?? ($status === 'paid' ? now()->toDateString() : null);
+
+        $previousPayment = SubscriptionPayment::where('subscription_member_id', $member->id)
+            ->where('reference_month', $referenceMonth)
+            ->first();
+
+        $wasPaid = $previousPayment && ($previousPayment->status === SubscriptionPaymentStatus::Paid || $previousPayment->status?->value === 'paid' || $previousPayment->status === 'paid');
+        $isNowPaid = $status === SubscriptionPaymentStatus::Paid->value || $status === 'paid';
+
+        $dataToUpdate = [
+            'amount' => $amount,
+            'status' => $status,
+            'payment_date' => $paymentDate,
+        ];
+
+        if ($pixE2EId) {
+            $dataToUpdate['pix_e2e_id'] = $pixE2EId;
+        }
+
+        if ($metadata) {
+            $dataToUpdate['receipt_metadata'] = $metadata;
+        }
+
+        $payment = SubscriptionPayment::updateOrCreate(
+            [
+                'subscription_member_id' => $member->id,
+                'reference_month' => $referenceMonth,
+            ],
+            $dataToUpdate
+        );
+
+        // When payment is confirmed, add income to primary bank account
+        if ($isNowPaid && ! $wasPaid) {
+            $primaryAccount = $subscription->workspace->getPrimaryBankAccount();
+            if ($primaryAccount) {
+                $this->transactionService->create([
+                    'workspace_id' => $subscription->workspace_id,
+                    'created_by_user_id' => $userId ?? $subscription->workspace->owner_id,
+                    'type' => TransactionType::Income,
+                    'amount' => $amount,
+                    'occurred_at' => $paymentDate ?? now()->toDateString(),
+                    'status' => TransactionStatus::Paid,
+                    'description' => "Rateio recebido: {$subscription->service_name} ({$member->name})",
+                    'bank_account_id' => $primaryAccount->id,
+                    'category_id' => $subscription->category_id,
+                    'subscription_id' => $subscription->id,
+                    'notes' => "Rateio recebido ciclo {$referenceMonth}".($pixE2EId ? " (Pix: {$pixE2EId})" : ''),
+                ]);
+            }
+        } elseif (! $isNowPaid && $wasPaid) {
+            // Revert credit from primary bank account
+            $incomeTx = Transaction::where('subscription_id', $subscription->id)
+                ->where('type', TransactionType::Income)
+                ->where('description', 'like', "%{$member->name}%")
+                ->where('occurred_at', 'like', "{$referenceMonth}%")
+                ->latest('occurred_at')
+                ->first();
+
+            if ($incomeTx) {
+                $this->transactionService->delete($incomeTx);
+            }
+        }
+
+        return $payment;
     }
 }

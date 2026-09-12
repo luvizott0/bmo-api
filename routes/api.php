@@ -10,9 +10,13 @@ use App\Http\Controllers\Api\StockCategoryController;
 use App\Http\Controllers\Api\StockShareController;
 use App\Http\Controllers\Api\SubscriptionController;
 use App\Http\Controllers\Api\TransactionController;
+use App\Http\Controllers\Api\WhatsAppWebhookController;
 use App\Http\Controllers\Api\WorkspaceController;
 use App\Http\Controllers\Api\WorkspaceInvitationController;
 use Illuminate\Support\Facades\Route;
+
+// Webhooks
+Route::post('/webhooks/whatsapp', [WhatsAppWebhookController::class, 'handle']);
 
 // Public Auth routes
 Route::prefix('auth')->group(function (): void {

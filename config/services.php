@@ -35,4 +35,15 @@ return [
         ],
     ],
 
+    'evolution' => [
+        'url' => env('EVOLUTION_API_URL', 'http://192.168.5.254:8082'),
+        'api_key' => env('EVOLUTION_API_KEY', 'bmo_secret_evolution_key_9f3a12b48c'),
+        'instance' => env('EVOLUTION_INSTANCE', 'bmo'),
+        'webhook_secret' => env('EVOLUTION_WEBHOOK_SECRET', 'bmo_wh_secret_7a8b9c'),
+    ],
+
+    'receipt_extractor' => [
+        'url' => env('RECEIPT_EXTRACTOR_URL', 'http://127.0.0.1:8084/extract'),
+    ],
+
 ];

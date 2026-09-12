@@ -16,5 +16,5 @@ jobs:
           echo "==> Atualizando código do bmo-api..."
           git -C bmo-api pull origin main
           echo "==> Reconstruindo container bmo-api e executando migrations..."
-          docker compose up -d --build --no-deps bmo-api
+          docker compose up -d --build --no-deps bmo-api bmo-receipt-extractor
           echo "==> Deploy concluído com sucesso!"

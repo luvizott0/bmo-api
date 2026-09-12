@@ -46,6 +46,18 @@ services:
     networks:
       - home-manager-net
 
+  receipt-extractor:
+    image: bmo-receipt-extractor:latest
+    build:
+      context: ./receipt-extractor
+      dockerfile: Dockerfile
+    container_name: bmo-receipt-extractor
+    restart: unless-stopped
+    ports:
+      - "${RECEIPT_EXTRACTOR_PORT:-8084}:5000"
+    networks:
+      - home-manager-net
+
 volumes:
   api-data:
     name: home_manager_api_data
