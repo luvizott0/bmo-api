@@ -144,10 +144,10 @@ class WhatsAppReceiptProcessorService
             }
         }
 
-        // Match member
-        $member = $this->findMember($senderPhone, $extracted['payer_name'] ?? null, $pushName, $amount, $referenceMonth);
+        // Match members (single or combo)
+        $matchedMembers = $this->matchMembersForPayment($senderPhone, $extracted['payer_name'] ?? null, $pushName, $amount, $referenceMonth);
 
-        if (! $member) {
+        if (empty($matchedMembers)) {
             $formattedAmount = number_format($amount, 2, ',', '.');
             $senderLabel = $pushName ?: ($extracted['payer_name'] ?? 'Remetente');
 
@@ -161,7 +161,8 @@ class WhatsAppReceiptProcessorService
         }
 
         // Validate recipient against Workspace Owner name (if extracted)
-        $workspace = $member->subscription->workspace;
+        $firstMember = $matchedMembers[0];
+        $workspace = $firstMember->subscription->workspace;
         $ownerName = $workspace?->owner?->name;
 
         if ($ownerName && ! empty($extracted['recipient_name'])) {
@@ -176,47 +177,108 @@ class WhatsAppReceiptProcessorService
             }
         }
 
-        // Record payment
-        $this->subscriptionService->recordMemberPayment(
-            member: $member,
-            referenceMonth: $referenceMonth,
-            status: SubscriptionPaymentStatus::Paid->value,
-            amount: $amount,
-            paymentDate: $paymentDate,
-            pixE2EId: $transactionId,
-            metadata: $extracted,
-            userId: $workspace?->owner_id
-        );
+        // Record payment for each member in the matched list
+        foreach ($matchedMembers as $member) {
+            $this->subscriptionService->recordMemberPayment(
+                member: $member,
+                referenceMonth: $referenceMonth,
+                status: SubscriptionPaymentStatus::Paid->value,
+                amount: (float) $member->installment_amount,
+                paymentDate: $paymentDate,
+                pixE2EId: $transactionId,
+                metadata: $extracted,
+                userId: $workspace?->owner_id
+            );
+        }
 
         // Send confirmation
         $formattedAmount = number_format($amount, 2, ',', '.');
-        $serviceName = $member->subscription->service_name;
         $cycleLabel = implode('/', array_reverse(explode('-', $referenceMonth)));
 
-        $reply = "✅ *Pagamento Confirmado!*\n".
-                 "👤 *Membro:* {$member->name}\n".
-                 "📺 *Assinatura:* {$serviceName}\n".
-                 "💰 *Valor:* R$ {$formattedAmount}\n".
-                 "📅 *Ciclo:* {$cycleLabel}";
+        if (count($matchedMembers) === 1) {
+            $member = $matchedMembers[0];
+            $serviceName = $member->subscription->service_name;
+
+            $reply = "✅ *Pagamento Confirmado!*\n".
+                     "👤 *Membro:* {$member->name}\n".
+                     "📺 *Assinatura:* {$serviceName}\n".
+                     "💰 *Valor:* R$ {$formattedAmount}\n".
+                     "📅 *Ciclo:* {$cycleLabel}";
+        } else {
+            $memberName = $firstMember->name;
+
+            $reply = "✅ *Pagamento Confirmado (Combo)!*\n".
+                     "👤 *Membro:* {$memberName}\n".
+                     "💰 *Total Recebido:* R$ {$formattedAmount}\n".
+                     "📅 *Ciclo:* {$cycleLabel}\n\n".
+                     "📺 *Assinaturas quitadas:*\n";
+
+            foreach ($matchedMembers as $member) {
+                $serviceName = $member->subscription->service_name;
+                $memberAmount = number_format((float) $member->installment_amount, 2, ',', '.');
+                $reply .= "• {$serviceName}: R$ {$memberAmount}\n";
+            }
+        }
 
         if ($transactionId) {
             $shortId = strlen($transactionId) > 20 ? substr($transactionId, 0, 10).'...'.substr($transactionId, -6) : $transactionId;
             $reply .= "\n🏦 *Autenticação:* {$shortId}";
         }
 
-        $this->notificationService->sendText($remoteJid, $reply, $messageId);
+        $this->notificationService->sendText($remoteJid, trim($reply), $messageId);
     }
 
     /**
-     * Find the best matching SubscriptionMember based on receipt payer name, sender phone, or pushName.
+     * Hypocorisms dictionary for common Brazilian nicknames.
+     *
+     * @var array<string, array<int, string>>
      */
-    public function findMember(
+    private const NICKNAME_MAP = [
+        'gabs' => ['gabriel', 'gabriela'],
+        'biel' => ['gabriel'],
+        'gui' => ['guilherme'],
+        'ge' => ['guilherme', 'geraldo', 'geovanna', 'geovana'],
+        'rafa' => ['rafael', 'rafaela'],
+        'beto' => ['roberto'],
+        'dudu' => ['eduardo'],
+        'edu' => ['eduardo'],
+        'ze' => ['jose'],
+        'chico' => ['francisco'],
+        'manu' => ['manuela'],
+        'ju' => ['juliana', 'julia'],
+        'juju' => ['juliana', 'julia'],
+        'nat' => ['nathalia', 'natalia'],
+        'nati' => ['nathalia', 'natalia'],
+        'isa' => ['isabela', 'isadora'],
+        'leo' => ['leonardo'],
+        'dani' => ['daniel', 'daniela'],
+        'lu' => ['lucas', 'luisa', 'luana', 'luiz'],
+        'lucca' => ['lucas'],
+        'vi' => ['vinicius', 'vitor', 'victoria'],
+        'vini' => ['vinicius'],
+        'fer' => ['fernando', 'fernanda'],
+        'nando' => ['fernando'],
+        'ale' => ['alexandre', 'alessandro'],
+        'pedro' => ['pedro'],
+        'pedrinho' => ['pedro'],
+        'joao' => ['joao'],
+        'joaozinho' => ['joao'],
+        'oscar' => ['oscar'],
+        'oscarzinho' => ['oscar'],
+    ];
+
+    /**
+     * Find matching SubscriptionMember(s) that resolve the receipt amount (single or combo).
+     *
+     * @return array<SubscriptionMember>|null
+     */
+    public function matchMembersForPayment(
         string $phoneDigits,
         ?string $payerName,
         string $pushName,
         float $amount,
         string $referenceMonth
-    ): ?SubscriptionMember {
+    ): ?array {
         $lastDigits = strlen($phoneDigits) >= 8 ? substr($phoneDigits, -8) : $phoneDigits;
 
         // Query active members
@@ -237,7 +299,10 @@ class WhatsAppReceiptProcessorService
             $byPayer = $candidates->filter(fn (SubscriptionMember $m) => $this->namesMatch($m->name, $payerName));
 
             if ($byPayer->isNotEmpty()) {
-                return $this->resolveBestCandidate($byPayer, $amount, $referenceMonth);
+                $resolved = $this->resolveMembersByAmount($byPayer, $amount, $referenceMonth);
+                if (! empty($resolved)) {
+                    return $resolved;
+                }
             }
         }
 
@@ -250,7 +315,10 @@ class WhatsAppReceiptProcessorService
             });
 
             if ($byPhone->isNotEmpty()) {
-                return $this->resolveBestCandidate($byPhone, $amount, $referenceMonth);
+                $resolved = $this->resolveMembersByAmount($byPhone, $amount, $referenceMonth);
+                if (! empty($resolved)) {
+                    return $resolved;
+                }
             }
         }
 
@@ -259,7 +327,10 @@ class WhatsAppReceiptProcessorService
             $byPush = $candidates->filter(fn (SubscriptionMember $m) => $this->namesMatch($m->name, $pushName));
 
             if ($byPush->isNotEmpty()) {
-                return $this->resolveBestCandidate($byPush, $amount, $referenceMonth);
+                $resolved = $this->resolveMembersByAmount($byPush, $amount, $referenceMonth);
+                if (! empty($resolved)) {
+                    return $resolved;
+                }
             }
         }
 
@@ -267,39 +338,114 @@ class WhatsAppReceiptProcessorService
     }
 
     /**
-     * Resolve the best candidate among matched members by amount and pending status.
+     * Legacy single-member finder for backward compatibility.
+     */
+    public function findMember(
+        string $phoneDigits,
+        ?string $payerName,
+        string $pushName,
+        float $amount,
+        string $referenceMonth
+    ): ?SubscriptionMember {
+        $members = $this->matchMembersForPayment($phoneDigits, $payerName, $pushName, $amount, $referenceMonth);
+
+        return ! empty($members) ? $members[0] : null;
+    }
+
+    /**
+     * Resolve single member or multiple members combination matching the amount.
      *
      * @param  Collection<int, SubscriptionMember>  $matchedMembers
+     * @return array<SubscriptionMember>|null
      */
-    private function resolveBestCandidate(Collection $matchedMembers, float $amount, string $referenceMonth): ?SubscriptionMember
+    private function resolveMembersByAmount(Collection $matchedMembers, float $amount, string $referenceMonth): ?array
     {
-        if ($matchedMembers->count() === 1) {
-            return $matchedMembers->first();
-        }
-
-        // Filter by installment amount matching (within 1.00 tolerance)
-        $byAmount = $matchedMembers->filter(function (SubscriptionMember $m) use ($amount) {
+        // 1. Check if a single member's installment matches (within 1.00 tolerance)
+        $bySingleAmount = $matchedMembers->filter(function (SubscriptionMember $m) use ($amount) {
             return abs(((float) $m->installment_amount) - $amount) < 1.00;
         });
 
-        $pool = $byAmount->isNotEmpty() ? $byAmount : $matchedMembers;
-
-        if ($pool->count() === 1) {
-            return $pool->first();
+        if ($bySingleAmount->count() === 1) {
+            return [$bySingleAmount->first()];
         }
 
-        // Prioritize member who has a pending payment for this cycle
-        $pending = $pool->filter(function (SubscriptionMember $m) use ($referenceMonth) {
+        if ($bySingleAmount->count() > 1) {
+            // Prioritize one pending for this reference month
+            $pending = $bySingleAmount->filter(function (SubscriptionMember $m) use ($referenceMonth) {
+                $payment = $m->payments->firstWhere('reference_month', $referenceMonth);
+
+                return ! $payment || $payment->status !== SubscriptionPaymentStatus::Paid;
+            });
+
+            return [$pending->first() ?: $bySingleAmount->first()];
+        }
+
+        // 2. Multi-Subscription Combination (Combo) match
+        $pendingMembers = $matchedMembers->filter(function (SubscriptionMember $m) use ($referenceMonth) {
             $payment = $m->payments->firstWhere('reference_month', $referenceMonth);
 
             return ! $payment || $payment->status !== SubscriptionPaymentStatus::Paid;
         });
 
-        return $pending->first() ?: $pool->first();
+        $comboPool = $pendingMembers->isNotEmpty() ? $pendingMembers : $matchedMembers;
+        $combo = $this->findSubsetSum($comboPool->values()->all(), $amount);
+
+        if (! empty($combo)) {
+            return $combo;
+        }
+
+        // If only 1 candidate existed, return it even if amount has slight variance
+        if ($matchedMembers->count() === 1) {
+            return [$matchedMembers->first()];
+        }
+
+        return null;
     }
 
     /**
-     * Check if two names match by first name, common tokens, or nickname/diminutive stems.
+     * Find a subset of members whose installment amounts sum to $targetAmount (tolerance 0.10).
+     *
+     * @param  array<SubscriptionMember>  $members
+     * @return array<SubscriptionMember>|null
+     */
+    private function findSubsetSum(array $members, float $targetAmount, float $tolerance = 0.10): ?array
+    {
+        $n = count($members);
+        if ($n < 2) {
+            return null;
+        }
+
+        $totalCombos = 1 << $n;
+        $bestMatch = null;
+        $smallestDiff = $tolerance;
+
+        for ($i = 1; $i < $totalCombos; $i++) {
+            // Only consider combinations of 2 or more members
+            if (substr_count(decbin($i), '1') < 2) {
+                continue;
+            }
+
+            $combo = [];
+            $sum = 0.0;
+            for ($j = 0; $j < $n; $j++) {
+                if ($i & (1 << $j)) {
+                    $combo[] = $members[$j];
+                    $sum += (float) $members[$j]->installment_amount;
+                }
+            }
+
+            $diff = abs($sum - $targetAmount);
+            if ($diff <= $smallestDiff) {
+                $smallestDiff = $diff;
+                $bestMatch = $combo;
+            }
+        }
+
+        return $bestMatch;
+    }
+
+    /**
+     * Check if two names match by first name, initials, single surname, common tokens, or nicknames.
      */
     public function namesMatch(string $nameA, string $nameB): bool
     {
@@ -318,14 +464,27 @@ class WhatsAppReceiptProcessorService
             return false;
         }
 
-        // Check if first name matches (including diminutives/stems)
+        // 1. Check initials / acronyms (e.g. "JV" for "João Victor")
+        if ($this->initialsMatch($cleanA, $partsB) || $this->initialsMatch($cleanB, $partsA)) {
+            return true;
+        }
+
+        // 2. Check if first name matches or nickname matches
         $firstA = $partsA[0];
         $firstB = $partsB[0];
         if ($this->tokensMatch($firstA, $firstB)) {
             return true;
         }
 
-        // Check intersection of tokens
+        // 3. Single token match (e.g. Member is registered as single surname "Godoy" or "Pedro")
+        if (count($partsA) === 1 && $this->containsToken($partsB, $partsA[0])) {
+            return true;
+        }
+        if (count($partsB) === 1 && $this->containsToken($partsA, $partsB[0])) {
+            return true;
+        }
+
+        // 4. Check intersection of tokens
         $commonCount = 0;
         foreach ($partsA as $tA) {
             foreach ($partsB as $tB) {
@@ -340,11 +499,58 @@ class WhatsAppReceiptProcessorService
     }
 
     /**
-     * Check if two name tokens match, accounting for Brazilian diminutives and prefixes.
+     * Check if a short string matches the initials of a full name.
+     * E.g. "jv" matches ["joao", "victor", "da", "silva"].
+     *
+     * @param  array<int, string>  $tokens
      */
-    private function tokensMatch(string $tokenA, string $tokenB): bool
+    private function initialsMatch(string $candidate, array $tokens): bool
+    {
+        $candidate = str_replace(['.', ' ', '-'], '', mb_strtolower($candidate));
+        $len = strlen($candidate);
+
+        if ($len < 2 || $len > 4 || count($tokens) < $len) {
+            return false;
+        }
+
+        $initials = '';
+        for ($i = 0; $i < $len; $i++) {
+            $initials .= mb_substr($tokens[$i], 0, 1);
+        }
+
+        return $candidate === $initials;
+    }
+
+    /**
+     * Check if an array of tokens contains a target token (or matches via tokensMatch).
+     *
+     * @param  array<int, string>  $tokens
+     */
+    private function containsToken(array $tokens, string $target): bool
+    {
+        foreach ($tokens as $token) {
+            if ($this->tokensMatch($token, $target)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if two name tokens match, accounting for Brazilian hypocorisms, diminutives and prefixes.
+     */
+    public function tokensMatch(string $tokenA, string $tokenB): bool
     {
         if ($tokenA === $tokenB) {
+            return true;
+        }
+
+        // Check hypocorism dictionary
+        if (isset(self::NICKNAME_MAP[$tokenA]) && in_array($tokenB, self::NICKNAME_MAP[$tokenA], true)) {
+            return true;
+        }
+        if (isset(self::NICKNAME_MAP[$tokenB]) && in_array($tokenA, self::NICKNAME_MAP[$tokenB], true)) {
             return true;
         }
 

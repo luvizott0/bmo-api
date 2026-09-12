@@ -13,6 +13,7 @@ use App\Models\User;
 use App\Models\Workspace;
 use App\Services\ReceiptExtractorService;
 use App\Services\WhatsAppNotificationService;
+use App\Services\WhatsAppReceiptProcessorService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 
 uses(RefreshDatabase::class);
@@ -331,4 +332,137 @@ test('webhook fetches media from API and matches member with diminutive nickname
         ->and($payment->status)->toBe(SubscriptionPaymentStatus::Paid)
         ->and((float) $payment->amount)->toBe(8.98)
         ->and($payment->pix_e2e_id)->toBe('E2289643120260907210217038166666');
+});
+
+test('processor accurately matches brazilian hypocorisms, initials and single surnames', function () {
+    $processor = app(WhatsAppReceiptProcessorService::class);
+
+    // Gabs -> Gabriel Felipe Punaro Baptista
+    expect($processor->namesMatch('Gabs', 'Gabriel Felipe Punaro Baptista'))->toBeTrue();
+    expect($processor->namesMatch('Gabriel Felipe Punaro Baptista', 'Gabs'))->toBeTrue();
+
+    // Biel -> Gabriel
+    expect($processor->namesMatch('Biel', 'Gabriel Silva'))->toBeTrue();
+
+    // JV -> João Victor da Silva
+    expect($processor->namesMatch('JV', 'João Victor da Silva'))->toBeTrue();
+
+    // Godoy -> Lucas Matheus Godoy (single surname match)
+    expect($processor->namesMatch('Godoy', 'Lucas Matheus Godoy'))->toBeTrue();
+
+    // Oscarzinho -> OSCAR BOBERG FILHO
+    expect($processor->namesMatch('Oscarzinho', 'OSCAR BOBERG FILHO'))->toBeTrue();
+
+    // Negative tests: different people shouldn't match
+    expect($processor->namesMatch('Gabs', 'Lucas Silva'))->toBeFalse();
+    expect($processor->namesMatch('Calebe', 'Gabriel Felipe Punaro Baptista'))->toBeFalse();
+});
+
+test('webhook handles multi-subscription combo payment in a single pix', function () {
+    // Create second subscription in same workspace
+    $sub2 = Subscription::factory()->create([
+        'workspace_id' => $this->workspace->id,
+        'service_name' => 'HBO Max',
+        'total_amount' => 35.00,
+        'is_active' => true,
+    ]);
+
+    // Gabs is in Subscription 1 (Netflix) for 8.98
+    $gabsSub1 = SubscriptionMember::factory()->create([
+        'subscription_id' => $this->subscription->id,
+        'name' => 'Gabs',
+        'contact' => null,
+        'installment_amount' => 8.98,
+        'is_active' => true,
+    ]);
+
+    // Gabs is also in Subscription 2 (HBO Max) for 6.82
+    $gabsSub2 = SubscriptionMember::factory()->create([
+        'subscription_id' => $sub2->id,
+        'name' => 'Gabs',
+        'contact' => null,
+        'installment_amount' => 6.82,
+        'is_active' => true,
+    ]);
+
+    $mockExtractor = Mockery::mock(ReceiptExtractorService::class);
+    // Gabs pays 15.80 (8.98 + 6.82)
+    $mockExtractor->shouldReceive('extractFromBase64')
+        ->once()
+        ->andReturn([
+            'success' => true,
+            'amount' => 15.80,
+            'payment_date' => '2026-09-12',
+            'transaction_id' => 'E0000000020260912COMBO1580PAGTO',
+            'payer_name' => 'Gabriel Felipe Punaro Baptista',
+            'recipient_name' => 'Calebe Luvizotto',
+        ]);
+    $this->app->instance(ReceiptExtractorService::class, $mockExtractor);
+
+    $mockNotifier = Mockery::mock(WhatsAppNotificationService::class);
+    $mockNotifier->shouldReceive('sendText')
+        ->once()
+        ->withArgs(function ($remoteJid, $text, $msgId) {
+            return str_contains($text, 'Combo')
+                && str_contains($text, 'Gabs')
+                && str_contains($text, '15,80')
+                && str_contains($text, 'Netflix Premium')
+                && str_contains($text, '8,98')
+                && str_contains($text, 'HBO Max')
+                && str_contains($text, '6,82')
+                && $msgId === 'MSG_COMBO_001';
+        })
+        ->andReturn(true);
+    $this->app->instance(WhatsAppNotificationService::class, $mockNotifier);
+
+    $payload = [
+        'event' => 'messages.upsert',
+        'data' => [
+            'key' => [
+                'remoteJid' => '120363028374928374@g.us',
+                'fromMe' => false,
+                'id' => 'MSG_COMBO_001',
+                'participant' => '5511999990000@s.whatsapp.net',
+            ],
+            'pushName' => 'Gabriel Baptista',
+            'messageType' => 'imageMessage',
+            'message' => [
+                'imageMessage' => ['mimetype' => 'image/jpeg'],
+                'base64' => base64_encode('fake-image-bytes'),
+            ],
+        ],
+    ];
+
+    $response = $this->postJson('/api/webhooks/whatsapp', $payload, [
+        'X-Webhook-Token' => 'test_secret_123',
+    ]);
+
+    $response->assertOk();
+
+    // 1. Assert Payment for Sub 1 was settled
+    $pay1 = SubscriptionPayment::where('subscription_member_id', $gabsSub1->id)
+        ->where('reference_month', '2026-09')
+        ->first();
+    expect($pay1)->not->toBeNull()
+        ->and($pay1->status)->toBe(SubscriptionPaymentStatus::Paid)
+        ->and((float) $pay1->amount)->toBe(8.98)
+        ->and($pay1->pix_e2e_id)->toBe('E0000000020260912COMBO1580PAGTO');
+
+    // 2. Assert Payment for Sub 2 was settled with the SAME pix_e2e_id
+    $pay2 = SubscriptionPayment::where('subscription_member_id', $gabsSub2->id)
+        ->where('reference_month', '2026-09')
+        ->first();
+    expect($pay2)->not->toBeNull()
+        ->and($pay2->status)->toBe(SubscriptionPaymentStatus::Paid)
+        ->and((float) $pay2->amount)->toBe(6.82)
+        ->and($pay2->pix_e2e_id)->toBe('E0000000020260912COMBO1580PAGTO');
+
+    // 3. Assert Two Income Transactions were created
+    $txs = Transaction::where('status', TransactionStatus::Paid)
+        ->where('type', TransactionType::Income)
+        ->whereIn('subscription_id', [$this->subscription->id, $sub2->id])
+        ->get();
+
+    expect($txs->count())->toBe(2);
+    expect((float) $txs->sum('amount'))->toBe(15.80);
 });
