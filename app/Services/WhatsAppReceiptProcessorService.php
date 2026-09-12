@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Enums\SubscriptionPaymentStatus;
 use App\Models\SubscriptionMember;
 use App\Models\SubscriptionPayment;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 
 class WhatsAppReceiptProcessorService
@@ -78,12 +79,6 @@ class WhatsAppReceiptProcessorService
 
         // Get base64 payload
         $base64 = $messageObj['base64'] ?? ($msg['base64'] ?? null);
-        if (! $base64) {
-            Log::info('WhatsApp message with media has no base64 attached', ['message_id' => $messageId]);
-
-            return;
-        }
-
         $mimetype = 'image/jpeg';
         $filename = null;
 
@@ -94,6 +89,22 @@ class WhatsAppReceiptProcessorService
         } elseif ($isImage) {
             $img = $messageObj['imageMessage'] ?? [];
             $mimetype = $img['mimetype'] ?? 'image/jpeg';
+        }
+
+        // Fallback: If base64 was not sent directly in webhook payload, fetch from Evolution API
+        if (! $base64 && $messageId) {
+            $mediaData = $this->notificationService->getBase64FromMediaMessage($messageId);
+            if ($mediaData && ! empty($mediaData['base64'])) {
+                $base64 = $mediaData['base64'];
+                $mimetype = $mediaData['mimetype'] ?? $mimetype;
+                $filename = $mediaData['fileName'] ?? $filename;
+            }
+        }
+
+        if (! $base64) {
+            Log::info('WhatsApp message with media has no base64 attached and could not be fetched', ['message_id' => $messageId]);
+
+            return;
         }
 
         // Extract receipt data via Python extractor
@@ -197,7 +208,7 @@ class WhatsAppReceiptProcessorService
     }
 
     /**
-     * Find the best matching SubscriptionMember based on phone, name, and amount.
+     * Find the best matching SubscriptionMember based on receipt payer name, sender phone, or pushName.
      */
     public function findMember(
         string $phoneDigits,
@@ -217,9 +228,20 @@ class WhatsAppReceiptProcessorService
 
         $candidates = $query->get();
 
-        $matchedMembers = collect();
+        if ($candidates->isEmpty()) {
+            return null;
+        }
 
-        // 1. Phone match
+        // 1. Payer name match from receipt (highest priority when forwarded or sent in group)
+        if (! empty($payerName)) {
+            $byPayer = $candidates->filter(fn (SubscriptionMember $m) => $this->namesMatch($m->name, $payerName));
+
+            if ($byPayer->isNotEmpty()) {
+                return $this->resolveBestCandidate($byPayer, $amount, $referenceMonth);
+            }
+        }
+
+        // 2. Phone match
         if (! empty($lastDigits)) {
             $byPhone = $candidates->filter(function (SubscriptionMember $m) use ($lastDigits) {
                 $memberPhone = $this->extractDigits($m->contact ?? '');
@@ -228,58 +250,56 @@ class WhatsAppReceiptProcessorService
             });
 
             if ($byPhone->isNotEmpty()) {
-                $matchedMembers = $byPhone;
+                return $this->resolveBestCandidate($byPhone, $amount, $referenceMonth);
             }
         }
 
-        // 2. Fallback to name match if no phone match
-        if ($matchedMembers->isEmpty()) {
-            $byName = $candidates->filter(function (SubscriptionMember $m) use ($payerName, $pushName) {
-                if ($payerName && $this->namesMatch($m->name, $payerName)) {
-                    return true;
-                }
-                if ($pushName && $this->namesMatch($m->name, $pushName)) {
-                    return true;
-                }
+        // 3. Fallback to WhatsApp pushName
+        if (! empty($pushName)) {
+            $byPush = $candidates->filter(fn (SubscriptionMember $m) => $this->namesMatch($m->name, $pushName));
 
-                return false;
-            });
-
-            if ($byName->isNotEmpty()) {
-                $matchedMembers = $byName;
+            if ($byPush->isNotEmpty()) {
+                return $this->resolveBestCandidate($byPush, $amount, $referenceMonth);
             }
         }
 
-        if ($matchedMembers->isEmpty()) {
-            return null;
-        }
+        return null;
+    }
 
-        // If only 1 member found, check if amount is close
+    /**
+     * Resolve the best candidate among matched members by amount and pending status.
+     *
+     * @param  Collection<int, SubscriptionMember>  $matchedMembers
+     */
+    private function resolveBestCandidate(Collection $matchedMembers, float $amount, string $referenceMonth): ?SubscriptionMember
+    {
         if ($matchedMembers->count() === 1) {
             return $matchedMembers->first();
         }
 
-        // Filter by installment amount matching
+        // Filter by installment amount matching (within 1.00 tolerance)
         $byAmount = $matchedMembers->filter(function (SubscriptionMember $m) use ($amount) {
             return abs(((float) $m->installment_amount) - $amount) < 1.00;
         });
 
-        if ($byAmount->count() === 1) {
-            return $byAmount->first();
+        $pool = $byAmount->isNotEmpty() ? $byAmount : $matchedMembers;
+
+        if ($pool->count() === 1) {
+            return $pool->first();
         }
 
         // Prioritize member who has a pending payment for this cycle
-        $pending = ($byAmount->isNotEmpty() ? $byAmount : $matchedMembers)->filter(function (SubscriptionMember $m) use ($referenceMonth) {
+        $pending = $pool->filter(function (SubscriptionMember $m) use ($referenceMonth) {
             $payment = $m->payments->firstWhere('reference_month', $referenceMonth);
 
             return ! $payment || $payment->status !== SubscriptionPaymentStatus::Paid;
         });
 
-        return $pending->first() ?: $matchedMembers->first();
+        return $pending->first() ?: $pool->first();
     }
 
     /**
-     * Check if two names match by first name or common tokens.
+     * Check if two names match by first name, common tokens, or nickname/diminutive stems.
      */
     public function namesMatch(string $nameA, string $nameB): bool
     {
@@ -290,18 +310,63 @@ class WhatsAppReceiptProcessorService
             return true;
         }
 
-        $partsA = array_filter(explode(' ', $cleanA), fn ($p) => strlen($p) > 2);
-        $partsB = array_filter(explode(' ', $cleanB), fn ($p) => strlen($p) > 2);
+        $stopWords = ['da', 'de', 'do', 'das', 'dos', 'e'];
+        $partsA = array_values(array_filter(explode(' ', $cleanA), fn ($p) => strlen($p) >= 2 && ! in_array($p, $stopWords, true)));
+        $partsB = array_values(array_filter(explode(' ', $cleanB), fn ($p) => strlen($p) >= 2 && ! in_array($p, $stopWords, true)));
 
-        // Check if first name matches
-        if (! empty($partsA) && ! empty($partsB) && reset($partsA) === reset($partsB)) {
+        if (empty($partsA) || empty($partsB)) {
+            return false;
+        }
+
+        // Check if first name matches (including diminutives/stems)
+        $firstA = $partsA[0];
+        $firstB = $partsB[0];
+        if ($this->tokensMatch($firstA, $firstB)) {
             return true;
         }
 
         // Check intersection of tokens
-        $common = array_intersect($partsA, $partsB);
+        $commonCount = 0;
+        foreach ($partsA as $tA) {
+            foreach ($partsB as $tB) {
+                if ($this->tokensMatch($tA, $tB)) {
+                    $commonCount++;
+                    break;
+                }
+            }
+        }
 
-        return count($common) >= 2;
+        return $commonCount >= 2;
+    }
+
+    /**
+     * Check if two name tokens match, accounting for Brazilian diminutives and prefixes.
+     */
+    private function tokensMatch(string $tokenA, string $tokenB): bool
+    {
+        if ($tokenA === $tokenB) {
+            return true;
+        }
+
+        $stemA = preg_replace('/(zinhos?|zinhas?|z[aã]os?|inhos?|inhas?|[aã]os?)$/u', '', $tokenA) ?? $tokenA;
+        $stemB = preg_replace('/(zinhos?|zinhas?|z[aã]os?|inhos?|inhas?|[aã]os?)$/u', '', $tokenB) ?? $tokenB;
+
+        if (strlen($stemA) >= 3 && strlen($stemB) >= 3) {
+            if ($stemA === $stemB) {
+                return true;
+            }
+            if (str_starts_with($stemA, $stemB) || str_starts_with($stemB, $stemA)) {
+                return true;
+            }
+        }
+
+        if (strlen($tokenA) >= 3 && strlen($tokenB) >= 3) {
+            if (str_starts_with($tokenA, $tokenB) || str_starts_with($tokenB, $tokenA)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

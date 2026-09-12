@@ -64,4 +64,62 @@ class WhatsAppNotificationService
 
         return false;
     }
+
+    /**
+     * Retrieve base64 and metadata of a media message from Evolution API.
+     *
+     * @return array{
+     *     base64: ?string,
+     *     mimetype: ?string,
+     *     fileName: ?string,
+     *     caption: ?string
+     * }|null
+     */
+    public function getBase64FromMediaMessage(string $messageId): ?array
+    {
+        $baseUrl = rtrim($this->baseUrl ?: config('services.evolution.url'), '/');
+        $apiKey = $this->apiKey ?: config('services.evolution.api_key');
+        $instance = $this->instance ?: config('services.evolution.instance');
+
+        $url = "{$baseUrl}/chat/getBase64FromMediaMessage/{$instance}";
+
+        try {
+            $response = Http::timeout(20)
+                ->withHeaders([
+                    'apikey' => $apiKey,
+                    'Content-Type' => 'application/json',
+                ])
+                ->post($url, [
+                    'message' => [
+                        'key' => [
+                            'id' => $messageId,
+                        ],
+                    ],
+                    'convertToMp4' => false,
+                ]);
+
+            if ($response->successful()) {
+                $data = $response->json();
+
+                return [
+                    'base64' => $data['base64'] ?? null,
+                    'mimetype' => $data['mimetype'] ?? null,
+                    'fileName' => $data['fileName'] ?? null,
+                    'caption' => $data['caption'] ?? null,
+                ];
+            }
+
+            Log::warning('WhatsAppNotificationService: failed to get base64 media', [
+                'status' => $response->status(),
+                'message_id' => $messageId,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('WhatsAppNotificationService getBase64 error', [
+                'error' => $e->getMessage(),
+                'message_id' => $messageId,
+            ]);
+        }
+
+        return null;
+    }
 }

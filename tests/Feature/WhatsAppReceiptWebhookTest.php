@@ -246,3 +246,89 @@ test('webhook alerts when recipient in receipt does not match workspace owner', 
     // Assert no payment was recorded
     expect(SubscriptionPayment::where('pix_e2e_id', 'E9999999999999999999999999999999')->exists())->toBeFalse();
 });
+
+test('webhook fetches media from API and matches member with diminutive nickname when forwarded', function () {
+    // Create member Oscarzinho
+    $oscar = SubscriptionMember::factory()->create([
+        'subscription_id' => $this->subscription->id,
+        'name' => 'Oscarzinho',
+        'contact' => '11911112222',
+        'installment_amount' => 8.98,
+        'is_active' => true,
+    ]);
+
+    $mockNotifier = Mockery::mock(WhatsAppNotificationService::class);
+    // Should fetch base64 from evolution API
+    $mockNotifier->shouldReceive('getBase64FromMediaMessage')
+        ->once()
+        ->with('MSG_FORWARDED_001')
+        ->andReturn([
+            'base64' => base64_encode('fake-pdf-content'),
+            'mimetype' => 'application/pdf',
+            'fileName' => 'comprovante.pdf',
+        ]);
+
+    // Should send confirmation matching Oscarzinho
+    $mockNotifier->shouldReceive('sendText')
+        ->once()
+        ->withArgs(function ($remoteJid, $text, $msgId) {
+            return $remoteJid === '5511988887777@s.whatsapp.net'
+                && str_contains($text, 'Pagamento Confirmado')
+                && str_contains($text, 'Oscarzinho')
+                && str_contains($text, '8,98')
+                && $msgId === 'MSG_FORWARDED_001';
+        })
+        ->andReturn(true);
+
+    $this->app->instance(WhatsAppNotificationService::class, $mockNotifier);
+
+    $mockExtractor = Mockery::mock(ReceiptExtractorService::class);
+    $mockExtractor->shouldReceive('extractFromBase64')
+        ->once()
+        ->andReturn([
+            'success' => true,
+            'amount' => 8.98,
+            'payment_date' => '2026-09-07',
+            'transaction_id' => 'E2289643120260907210217038166666',
+            'payer_name' => 'OSCAR BOBERG FILHO',
+            'recipient_name' => 'Calebe Luvizotto',
+        ]);
+    $this->app->instance(ReceiptExtractorService::class, $mockExtractor);
+
+    // Payload WITHOUT inline base64, forwarded by someone else (e.g. Calebe)
+    $payload = [
+        'event' => 'messages.upsert',
+        'data' => [
+            'key' => [
+                'remoteJid' => '5511988887777@s.whatsapp.net',
+                'fromMe' => false,
+                'id' => 'MSG_FORWARDED_001',
+            ],
+            'pushName' => 'Calebe',
+            'messageType' => 'documentMessage',
+            'message' => [
+                'documentMessage' => [
+                    'mimetype' => 'application/pdf',
+                    'fileName' => 'comprovante.pdf',
+                ],
+                // Notice: no 'base64' key here!
+            ],
+        ],
+    ];
+
+    $response = $this->postJson('/api/webhooks/whatsapp', $payload, [
+        'X-Webhook-Token' => 'test_secret_123',
+    ]);
+
+    $response->assertOk();
+
+    // Assert payment was recorded for Oscarzinho and cycle 2026-09
+    $payment = SubscriptionPayment::where('subscription_member_id', $oscar->id)
+        ->where('reference_month', '2026-09')
+        ->first();
+
+    expect($payment)->not->toBeNull()
+        ->and($payment->status)->toBe(SubscriptionPaymentStatus::Paid)
+        ->and((float) $payment->amount)->toBe(8.98)
+        ->and($payment->pix_e2e_id)->toBe('E2289643120260907210217038166666');
+});

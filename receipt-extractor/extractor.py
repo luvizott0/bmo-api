@@ -101,6 +101,17 @@ def parse_date(date_str: str) -> Optional[str]:
         except ValueError:
             pass
 
+    # Format: DD/mon/YYYY or DD-mon-YYYY (e.g. 07/set/2026 or 07-setembro-2026)
+    m_mon = re.search(r"(\d{1,2})[/.-]([a-z]{3}\w*)[/.-](\d{4})", date_str, re.IGNORECASE)
+    if m_mon:
+        d, mon_str, y = m_mon.groups()
+        mon = MONTH_NAMES.get(mon_str.lower()[:3])
+        if mon:
+            try:
+                return datetime(int(y), mon, int(d)).strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+
     # Written month: 11 de setembro de 2026 or 11 set 2026
     m3 = re.search(r"(\d{1,2})\s+(?:de\s+)?([a-z]{3})\w*\s+(?:de\s+)?(\d{4})", date_str, re.IGNORECASE)
     if m3:
@@ -144,7 +155,8 @@ def extract_receipt_data(text: str) -> Dict[str, Any]:
 
     # 2. Extract Date (Data)
     date_regexes = [
-        r"(?:data|data\s+da\s+transa[cç][aã]o|hor[aá]rio|realizado\s+em)[\s:]*([0-9]{2}/[0-9]{2}/[0-9]{4})",
+        r"(\d{1,2}[/.-][a-z]{3}\w*[/.-]\d{4})",
+        r"(?:data|data\s+da\s+transa[cç][aã]o|hor[aá]rio|realizado\s+em)[\s:]*([0-9]{1,2}[/.-][0-9]{1,2}[/.-][0-9]{4})",
         r"(\d{2}/\d{2}/\d{4})",
         r"(\d{1,2}\s+(?:de\s+)?[a-z]{3}\w*\s+(?:de\s+)?\d{4})",
         r"(\d{4}-\d{2}-\d{2})",
@@ -174,6 +186,16 @@ def extract_receipt_data(text: str) -> Dict[str, Any]:
             if m and len(m.group(1)) >= 8:
                 transaction_id = m.group(1)
                 break
+
+    # If payment_date was not found in raw text, extract from standard Pix EndToEnd ID
+    if not payment_date and transaction_id:
+        m_e2e = re.search(r"^[ED]\d{8}(\d{4})(\d{2})(\d{2})", transaction_id)
+        if m_e2e:
+            y, m, d = m_e2e.groups()
+            try:
+                payment_date = datetime(int(y), int(m), int(d)).strftime("%Y-%m-%d")
+            except ValueError:
+                pass
 
     # 4. Extract Payer (Origem / De / Pagador)
     payer_regexes = [

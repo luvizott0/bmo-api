@@ -13,6 +13,7 @@ class TestExtractor(unittest.TestCase):
         self.assertEqual(parse_date("11/09/2026"), "2026-09-11")
         self.assertEqual(parse_date("2026-09-11"), "2026-09-11")
         self.assertEqual(parse_date("11 de setembro de 2026"), "2026-09-11")
+        self.assertEqual(parse_date("07/set/2026"), "2026-09-07")
 
     def test_extract_receipt_text_sample(self):
         sample_text = """
