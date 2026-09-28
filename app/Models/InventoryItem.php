@@ -74,14 +74,15 @@ class InventoryItem extends Model
         $purchases = $this->purchases()->get();
 
         if ($purchases->isNotEmpty()) {
-            $this->average_price = round((float) $purchases->avg('unit_price'), 2);
+            $last5 = $purchases->take(5);
+            $this->average_price = round((float) $last5->avg('unit_price'), 2);
             $latest = $purchases->first();
             if ($latest) {
                 $this->last_price = $latest->unit_price;
                 $this->last_purchased_at = $latest->purchased_at;
             }
 
-            $durations = $purchases->pluck('duration_days')->filter();
+            $durations = $last5->pluck('duration_days')->filter();
             if ($durations->isNotEmpty()) {
                 $this->duration_days = (int) round($durations->avg());
             }

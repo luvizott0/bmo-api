@@ -26,6 +26,7 @@ class RecordInventoryPurchaseRequest extends FormRequest
             'quantity' => ['required', 'numeric', 'min:0.01'],
             'unit_price' => ['required', 'numeric', 'min:0'],
             'duration_days' => ['nullable', 'integer', 'min:1'],
+            'store_name' => ['nullable', 'string', 'max:255'],
             'notes' => ['nullable', 'string', 'max:255'],
         ];
     }

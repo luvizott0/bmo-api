@@ -75,6 +75,7 @@ Route::middleware('auth:sanctum')->group(function (): void {
 
         // Stock Categories & Inventory Items
         Route::apiResource('stock-categories', StockCategoryController::class);
+        Route::get('/inventory-items/stores', [InventoryItemController::class, 'stores']);
         Route::apiResource('inventory-items', InventoryItemController::class);
         Route::post('/inventory-items/{inventory_item}/consume', [InventoryItemController::class, 'consume']);
         Route::post('/inventory-items/{inventory_item}/purchases', [InventoryItemController::class, 'recordPurchase']);

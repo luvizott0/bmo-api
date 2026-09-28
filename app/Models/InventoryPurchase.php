@@ -16,6 +16,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'unit_price',
     'total_price',
     'duration_days',
+    'store_name',
     'notes',
 ])]
 class InventoryPurchase extends Model

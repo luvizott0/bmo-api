@@ -23,6 +23,7 @@ class InventoryPurchaseResource extends JsonResource
             'unit_price' => (float) $this->unit_price,
             'total_price' => (float) $this->total_price,
             'duration_days' => $this->duration_days ? (int) $this->duration_days : null,
+            'store_name' => $this->store_name,
             'notes' => $this->notes,
             'created_at' => $this->created_at?->toISOString(),
         ];

@@ -24,7 +24,7 @@ class InventoryItemController extends Controller
         $in30Days = Carbon::today()->addDays(30)->toDateString();
 
         $query = $workspace->inventoryItems()
-            ->with(['category']);
+            ->with(['category', 'purchases']);
 
         // Search by name, brand or notes
         if ($request->filled('search')) {
@@ -280,6 +280,7 @@ class InventoryItemController extends Controller
             'unit_price' => $unitPrice,
             'total_price' => $totalPrice,
             'duration_days' => $durationDays,
+            'store_name' => $validated['store_name'] ?? null,
             'notes' => $validated['notes'] ?? null,
         ]);
 
@@ -295,6 +296,25 @@ class InventoryItemController extends Controller
         return (new InventoryItemResource($inventoryItem))
             ->response()
             ->setStatusCode(201);
+    }
+
+    /**
+     * Get list of unique store/establishment names used in purchases.
+     */
+    public function stores(Request $request): JsonResponse
+    {
+        $workspace = $request->workspace()->effectiveStockWorkspace();
+
+        $stores = \App\Models\InventoryPurchase::where('workspace_id', $workspace->id)
+            ->whereNotNull('store_name')
+            ->where('store_name', '!=', '')
+            ->distinct()
+            ->orderBy('store_name')
+            ->pluck('store_name');
+
+        return response()->json([
+            'data' => $stores,
+        ]);
     }
 
     private function ensureWorkspaceItem(Request $request, InventoryItem $inventoryItem): void
