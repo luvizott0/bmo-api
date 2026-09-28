@@ -153,7 +153,8 @@ class InventoryItemController extends Controller
                 'unit_price' => $unitPrice,
                 'total_price' => round($qty * $unitPrice, 2),
                 'duration_days' => $data['duration_days'] ?? null,
-                'notes' => 'Cadastro inicial do item',
+                'store_name' => $data['store_name'] ?? null,
+                'notes' => $data['notes'] ?? 'Cadastro inicial do item',
             ]);
         }
 

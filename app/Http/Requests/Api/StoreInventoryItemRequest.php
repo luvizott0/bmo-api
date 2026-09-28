@@ -33,6 +33,7 @@ class StoreInventoryItemRequest extends FormRequest
             'duration_days' => ['nullable', 'integer', 'min:1'],
             'last_purchased_at' => ['nullable', 'date'],
             'is_regular_expense' => ['nullable', 'boolean'],
+            'store_name' => ['nullable', 'string', 'max:255'],
             'notes' => ['nullable', 'string', 'max:1000'],
         ];
     }
