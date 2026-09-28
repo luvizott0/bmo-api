@@ -33,23 +33,25 @@ class EnsureWorkspaceContext
 
             if (! $workspace) {
                 return new JsonResponse([
-                    'message' => 'Espaço financeiro não encontrado ou você não tem permissão para acessá-lo.',
+                    'message' => 'Espaço não encontrado ou você não tem permissão para acessá-lo.',
                 ], 403);
             }
         } else {
-            $workspace = $user->personalWorkspace();
+            $workspace = $user->defaultWorkspace();
 
             if (! $workspace) {
                 // Create personal workspace if none exists yet
                 $workspace = Workspace::create([
                     'owner_id' => $user->id,
-                    'name' => 'Meu Espaço Pessoal',
+                    'name' => 'Casa',
                     'is_personal' => true,
                 ]);
 
                 $workspace->members()->attach($user->id, [
                     'role' => WorkspaceRole::Owner->value,
                 ]);
+
+                $user->update(['default_workspace_id' => $workspace->id]);
 
                 CategorySeeder::seedForWorkspace($workspace);
                 StockCategorySeeder::seedForWorkspace($workspace);

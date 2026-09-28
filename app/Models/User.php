@@ -13,7 +13,7 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 
-#[Fillable(['name', 'email', 'password', 'is_admin'])]
+#[Fillable(['name', 'email', 'password', 'is_admin', 'default_workspace_id'])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {
@@ -31,6 +31,7 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'is_admin' => 'boolean',
+            'default_workspace_id' => 'integer',
         ];
     }
 
@@ -74,6 +75,21 @@ class User extends Authenticatable
     }
 
     /**
+     * Get the user's defined default workspace.
+     */
+    public function defaultWorkspace(): ?Workspace
+    {
+        if ($this->default_workspace_id) {
+            $ws = $this->workspaces()->where('workspaces.id', $this->default_workspace_id)->first();
+            if ($ws) {
+                return $ws;
+            }
+        }
+
+        return $this->personalWorkspace();
+    }
+
+    /**
      * Resolve the current active workspace for the user.
      */
     public function currentWorkspace(?int $workspaceId = null): ?Workspace
@@ -82,6 +98,6 @@ class User extends Authenticatable
             return $this->workspaces()->where('workspaces.id', $workspaceId)->first();
         }
 
-        return $this->personalWorkspace();
+        return $this->defaultWorkspace();
     }
 }

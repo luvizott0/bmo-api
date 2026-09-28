@@ -20,6 +20,8 @@ class WorkspaceResource extends JsonResource
             'is_personal' => $this->is_personal,
             'owner_id' => $this->owner_id,
             'role' => $this->pivot?->role ?? ($this->owner_id === $request->user()?->id ? 'owner' : null),
+            'is_default' => (bool) ($request->user() && $request->user()->default_workspace_id === $this->id),
+            'members_count' => $this->members()->count(),
             'created_at' => $this->created_at?->toISOString(),
         ];
     }

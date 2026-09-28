@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CreditCardController;
 use App\Http\Controllers\Api\FixedBillController;
 use App\Http\Controllers\Api\InventoryItemController;
+use App\Http\Controllers\Api\ShoppingItemController;
 use App\Http\Controllers\Api\StockCategoryController;
 use App\Http\Controllers\Api\StockShareController;
 use App\Http\Controllers\Api\SubscriptionController;
@@ -33,12 +34,14 @@ Route::middleware('auth:sanctum')->group(function (): void {
         Route::put('/password', [AuthController::class, 'changePassword']);
     });
 
-    // Invitations (Accept/Reject)
+    // Invitations (Accept/Reject/Show)
+    Route::get('/invitations/{token}', [WorkspaceInvitationController::class, 'show']);
     Route::post('/invitations/{token}/accept', [WorkspaceInvitationController::class, 'accept']);
     Route::post('/invitations/{token}/reject', [WorkspaceInvitationController::class, 'reject']);
 
     // Workspaces Management
     Route::apiResource('workspaces', WorkspaceController::class)->except(['destroy']);
+    Route::post('/workspaces/{workspace}/set-default', [WorkspaceController::class, 'setDefault']);
     Route::get('/workspaces/{workspace}/members', [WorkspaceController::class, 'members']);
     Route::get('/workspaces/{workspace}/invitations', [WorkspaceInvitationController::class, 'index']);
     Route::post('/workspaces/{workspace}/invitations', [WorkspaceInvitationController::class, 'store']);
@@ -79,6 +82,14 @@ Route::middleware('auth:sanctum')->group(function (): void {
         Route::apiResource('inventory-items', InventoryItemController::class);
         Route::post('/inventory-items/{inventory_item}/consume', [InventoryItemController::class, 'consume']);
         Route::post('/inventory-items/{inventory_item}/purchases', [InventoryItemController::class, 'recordPurchase']);
+
+        // Shopping List Items (Real-time synced per space)
+        Route::get('/shopping-items', [ShoppingItemController::class, 'index']);
+        Route::post('/shopping-items', [ShoppingItemController::class, 'store']);
+        Route::put('/shopping-items/{shoppingItem}', [ShoppingItemController::class, 'update']);
+        Route::delete('/shopping-items/{shoppingItem}', [ShoppingItemController::class, 'destroy']);
+        Route::post('/shopping-items/clear-checked', [ShoppingItemController::class, 'clearChecked']);
+        Route::post('/shopping-items/finish', [ShoppingItemController::class, 'finish']);
 
         // Stock Sharing (Single-use link, status, accept, leave)
         Route::get('/stock-shares/status', [StockShareController::class, 'status']);

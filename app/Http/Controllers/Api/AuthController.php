@@ -36,13 +36,15 @@ class AuthController extends Controller
 
             $workspace = Workspace::create([
                 'owner_id' => $user->id,
-                'name' => 'My Personal Workspace',
+                'name' => 'Casa',
                 'is_personal' => true,
             ]);
 
             $workspace->members()->attach($user->id, [
                 'role' => WorkspaceRole::Owner->value,
             ]);
+
+            $user->update(['default_workspace_id' => $workspace->id]);
 
             CategorySeeder::seedForWorkspace($workspace);
 

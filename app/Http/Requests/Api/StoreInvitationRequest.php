@@ -24,7 +24,7 @@ class StoreInvitationRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'email' => ['required', 'string', 'email', 'max:255'],
+            'email' => ['nullable', 'string', 'email', 'max:255'],
             'role' => ['nullable', new Enum(WorkspaceRole::class)],
         ];
     }

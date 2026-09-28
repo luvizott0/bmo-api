@@ -18,6 +18,7 @@ class UserResource extends JsonResource
             'id' => $this->id,
             'name' => $this->name,
             'email' => $this->email,
+            'default_workspace_id' => $this->default_workspace_id,
             'created_at' => $this->created_at?->toISOString(),
         ];
     }

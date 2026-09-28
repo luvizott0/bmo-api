@@ -91,6 +91,11 @@ class Workspace extends Model
         return $this->hasMany(InventoryItem::class);
     }
 
+    public function shoppingItems(): HasMany
+    {
+        return $this->hasMany(ShoppingItem::class);
+    }
+
     public function stockWorkspace(): BelongsTo
     {
         return $this->belongsTo(self::class, 'stock_workspace_id');

@@ -63,6 +63,26 @@ class WorkspaceInvitationController extends Controller
     }
 
     /**
+     * Show invitation info by token.
+     */
+    public function show(string $token): JsonResponse
+    {
+        $invitation = WorkspaceInvitation::with(['workspace', 'invitedBy'])
+            ->where('token', $token)
+            ->firstOrFail();
+
+        return response()->json([
+            'data' => [
+                'token' => $invitation->token,
+                'workspace_name' => $invitation->workspace->name,
+                'invited_by_name' => $invitation->invitedBy?->name,
+                'status' => $invitation->status?->value ?? $invitation->status,
+                'is_pending' => $invitation->isPending(),
+            ],
+        ]);
+    }
+
+    /**
      * Accept a workspace invitation using the token.
      */
     public function accept(Request $request, string $token): JsonResponse
@@ -70,10 +90,17 @@ class WorkspaceInvitationController extends Controller
         $invitation = WorkspaceInvitation::where('token', $token)->firstOrFail();
 
         if (! $invitation->isPending()) {
-            abort(422, 'This invitation has expired or has already been used.');
+            abort(422, 'Este convite já expirou ou foi utilizado.');
         }
 
         $user = $request->user();
+
+        // Check if user is already a member
+        $alreadyMember = $invitation->workspace->members()->where('user_id', $user->id)->exists();
+
+        if (! $alreadyMember && $user->workspaces()->count() >= 3) {
+            abort(422, 'Você já atingiu o limite máximo de 3 espaços.');
+        }
 
         DB::transaction(function () use ($invitation, $user): void {
             $invitation->update([
@@ -83,10 +110,15 @@ class WorkspaceInvitationController extends Controller
             $invitation->workspace->members()->syncWithoutDetaching([
                 $user->id => ['role' => $invitation->role->value ?? $invitation->role],
             ]);
+
+            if (! $user->default_workspace_id) {
+                $user->update(['default_workspace_id' => $invitation->workspace_id]);
+            }
         });
 
         return response()->json([
-            'message' => 'Invitation accepted successfully! You are now a member of '.$invitation->workspace->name.'.',
+            'message' => 'Convite aceito com sucesso! Você agora é membro do espaço '.$invitation->workspace->name.'.',
+            'workspace' => new WorkspaceResource($invitation->workspace),
         ]);
     }
 
@@ -98,7 +130,7 @@ class WorkspaceInvitationController extends Controller
         $invitation = WorkspaceInvitation::where('token', $token)->firstOrFail();
 
         if (! $invitation->isPending()) {
-            abort(422, 'This invitation has already been concluded.');
+            abort(422, 'Este convite já foi concluído.');
         }
 
         $invitation->update([
@@ -106,16 +138,14 @@ class WorkspaceInvitationController extends Controller
         ]);
 
         return response()->json([
-            'message' => 'Invitation rejected successfully.',
+            'message' => 'Convite recusado com sucesso.',
         ]);
     }
 
     private function ensureCanManage(Request $request, Workspace $workspace): void
     {
-        $member = $workspace->members()->where('user_id', $request->user()->id)->first();
-
-        if (! $member || ! in_array($member->pivot->role, [WorkspaceRole::Owner->value, WorkspaceRole::Admin->value], true)) {
-            abort(403, 'Only owners and administrators can send invitations for this workspace.');
+        if (! $request->user()->workspaces()->where('workspaces.id', $workspace->id)->exists()) {
+            abort(403, 'Você não tem acesso a este espaço.');
         }
     }
 }

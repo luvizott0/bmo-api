@@ -33,6 +33,10 @@ class WorkspaceController extends Controller
     {
         $user = $request->user();
 
+        if ($user->workspaces()->count() >= 3) {
+            abort(422, 'Você pode ter no máximo 3 espaços.');
+        }
+
         $workspace = DB::transaction(function () use ($user, $request): Workspace {
             $workspace = Workspace::create([
                 'owner_id' => $user->id,
@@ -48,6 +52,10 @@ class WorkspaceController extends Controller
 
             return $workspace;
         });
+
+        if (! $user->default_workspace_id) {
+            $user->update(['default_workspace_id' => $workspace->id]);
+        }
 
         return (new WorkspaceResource($workspace))
             ->response()
@@ -65,15 +73,32 @@ class WorkspaceController extends Controller
     }
 
     /**
-     * Update the specified workspace.
+     * Update the specified workspace (any member can edit).
      */
     public function update(UpdateWorkspaceRequest $request, Workspace $workspace): JsonResponse
     {
-        $this->ensureCanManage($request, $workspace);
+        $this->ensureMember($request, $workspace);
 
         $workspace->update($request->validated());
 
         return (new WorkspaceResource($workspace))->response();
+    }
+
+    /**
+     * Set this workspace as the authenticated user's default space.
+     */
+    public function setDefault(Request $request, Workspace $workspace): JsonResponse
+    {
+        $this->ensureMember($request, $workspace);
+
+        $user = $request->user();
+        $user->update(['default_workspace_id' => $workspace->id]);
+
+        return response()->json([
+            'message' => 'Espaço padrão atualizado com sucesso.',
+            'default_workspace_id' => $workspace->id,
+            'workspace' => new WorkspaceResource($workspace),
+        ]);
     }
 
     /**
@@ -103,16 +128,12 @@ class WorkspaceController extends Controller
     private function ensureMember(Request $request, Workspace $workspace): void
     {
         if (! $request->user()->workspaces()->where('workspaces.id', $workspace->id)->exists()) {
-            abort(403, 'You do not have access to this workspace.');
+            abort(403, 'Você não tem acesso a este espaço.');
         }
     }
 
     private function ensureCanManage(Request $request, Workspace $workspace): void
     {
-        $member = $workspace->members()->where('user_id', $request->user()->id)->first();
-
-        if (! $member || ! in_array($member->pivot->role, [WorkspaceRole::Owner->value, WorkspaceRole::Admin->value], true)) {
-            abort(403, 'Only owners and administrators can manage this workspace.');
-        }
+        $this->ensureMember($request, $workspace);
     }
 }
