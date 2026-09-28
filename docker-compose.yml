@@ -46,6 +46,24 @@ services:
     networks:
       - home-manager-net
 
+  market-pwa:
+    image: market-pwa:latest
+    build:
+      context: ../market-pwa
+      dockerfile: Dockerfile
+    container_name: market-pwa
+    restart: unless-stopped
+    ports:
+      - "${MARKET_FRONTEND_PORT:-3001}:80"
+    environment:
+      - BACKEND_HOST=home-manager-api
+      - BACKEND_PORT=8000
+      - PORT=80
+    depends_on:
+      - home-manager-api
+    networks:
+      - home-manager-net
+
   receipt-extractor:
     image: bmo-receipt-extractor:latest
     build:
