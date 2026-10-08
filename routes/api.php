@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\BankAccountController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\CreditCardController;
 use App\Http\Controllers\Api\FixedBillController;
+use App\Http\Controllers\Api\FriendController;
 use App\Http\Controllers\Api\InventoryItemController;
 use App\Http\Controllers\Api\ShoppingItemController;
 use App\Http\Controllers\Api\StockCategoryController;
@@ -64,12 +65,16 @@ Route::middleware('auth:sanctum')->group(function (): void {
         Route::apiResource('transactions', TransactionController::class);
 
         // Subscriptions & Split Members
+        Route::get('/subscriptions/history', [SubscriptionController::class, 'history']);
         Route::apiResource('subscriptions', SubscriptionController::class);
         Route::post('/subscriptions/{subscription}/pay', [SubscriptionController::class, 'pay']);
         Route::post('/subscriptions/{subscription}/unpay', [SubscriptionController::class, 'unpay']);
         Route::post('/subscriptions/{subscription}/members', [SubscriptionController::class, 'addMember']);
         Route::delete('/subscriptions/{subscription}/members/{member}', [SubscriptionController::class, 'removeMember']);
         Route::post('/subscriptions/{subscription}/members/{member}/payments', [SubscriptionController::class, 'recordPayment']);
+
+        // Friends (Amigos para rateio de assinaturas)
+        Route::apiResource('friends', FriendController::class);
 
         // Fixed Bills & Reminders
         Route::apiResource('fixed-bills', FixedBillController::class);

@@ -9,7 +9,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
-#[Fillable(['subscription_id', 'user_id', 'name', 'contact', 'installment_amount', 'is_active'])]
+#[Fillable(['subscription_id', 'user_id', 'friend_id', 'name', 'contact', 'installment_amount', 'is_active'])]
 class SubscriptionMember extends Model
 {
     /** @use HasFactory<SubscriptionMemberFactory> */
@@ -31,6 +31,11 @@ class SubscriptionMember extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function friend(): BelongsTo
+    {
+        return $this->belongsTo(Friend::class);
     }
 
     public function payments(): HasMany

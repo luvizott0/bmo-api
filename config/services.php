@@ -40,6 +40,7 @@ return [
         'api_key' => env('EVOLUTION_API_KEY', 'bmo_secret_evolution_key_9f3a12b48c'),
         'instance' => env('EVOLUTION_INSTANCE', 'bmo'),
         'webhook_secret' => env('EVOLUTION_WEBHOOK_SECRET', 'bmo_wh_secret_7a8b9c'),
+        'subscriptions_reminder_jid' => env('WHATSAPP_SUBSCRIPTION_REMINDER_JID', env('WHATSAPP_GROUP_JID')),
     ],
 
     'receipt_extractor' => [

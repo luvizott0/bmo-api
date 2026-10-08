@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Enums\SubscriptionPaymentStatus;
+use App\Models\Friend;
 use App\Models\SubscriptionMember;
 use App\Models\SubscriptionPayment;
 use Illuminate\Support\Collection;
@@ -60,6 +61,10 @@ class WhatsAppReceiptProcessorService
         $remoteJid = $key['remoteJid'] ?? null;
         if (! $remoteJid) {
             return;
+        }
+
+        if (str_ends_with($remoteJid, '@g.us')) {
+            cache()->forever('last_whatsapp_group_jid', $remoteJid);
         }
 
         $messageId = $key['id'] ?? null;
@@ -279,14 +284,12 @@ class WhatsAppReceiptProcessorService
         float $amount,
         string $referenceMonth
     ): ?array {
-        $lastDigits = strlen($phoneDigits) >= 8 ? substr($phoneDigits, -8) : $phoneDigits;
-
-        // Query active members
+        // Query active members with friend relationship
         $query = SubscriptionMember::where('is_active', true)
             ->whereHas('subscription', function ($q) {
                 $q->where('is_active', true);
             })
-            ->with(['subscription.workspace.owner', 'payments']);
+            ->with(['subscription.workspace.owner', 'payments', 'friend']);
 
         $candidates = $query->get();
 
@@ -296,7 +299,16 @@ class WhatsAppReceiptProcessorService
 
         // 1. Payer name match from receipt (highest priority when forwarded or sent in group)
         if (! empty($payerName)) {
-            $byPayer = $candidates->filter(fn (SubscriptionMember $m) => $this->namesMatch($m->name, $payerName));
+            $byPayer = $candidates->filter(function (SubscriptionMember $m) use ($payerName) {
+                if ($this->namesMatch($m->name, $payerName)) {
+                    return true;
+                }
+                if ($m->friend && $this->namesMatch($m->friend->name, $payerName)) {
+                    return true;
+                }
+
+                return false;
+            });
 
             if ($byPayer->isNotEmpty()) {
                 $resolved = $this->resolveMembersByAmount($byPayer, $amount, $referenceMonth);
@@ -306,12 +318,18 @@ class WhatsAppReceiptProcessorService
             }
         }
 
-        // 2. Phone match
-        if (! empty($lastDigits)) {
-            $byPhone = $candidates->filter(function (SubscriptionMember $m) use ($lastDigits) {
-                $memberPhone = $this->extractDigits($m->contact ?? '');
+        // 2. Phone match (via direct member contact or linked Friend phone)
+        if (! empty($phoneDigits)) {
+            // A. Check members directly by contact or linked friend phone
+            $byPhone = $candidates->filter(function (SubscriptionMember $m) use ($phoneDigits) {
+                if ($this->phonesMatch($m->contact, $phoneDigits)) {
+                    return true;
+                }
+                if ($m->friend && $this->phonesMatch($m->friend->phone, $phoneDigits)) {
+                    return true;
+                }
 
-                return ! empty($memberPhone) && str_ends_with($memberPhone, $lastDigits);
+                return false;
             });
 
             if ($byPhone->isNotEmpty()) {
@@ -320,11 +338,38 @@ class WhatsAppReceiptProcessorService
                     return $resolved;
                 }
             }
+
+            // B. Check workspace Friend registry by phone, matching member by name or friend_id
+            $matchedFriend = Friend::whereHas('workspace.subscriptions', function ($q) {
+                $q->where('is_active', true);
+            })->get()->first(fn (Friend $f) => $this->phonesMatch($f->phone, $phoneDigits));
+
+            if ($matchedFriend) {
+                $byFriend = $candidates->filter(function (SubscriptionMember $m) use ($matchedFriend) {
+                    return $m->friend_id === $matchedFriend->id || $this->namesMatch($m->name, $matchedFriend->name);
+                });
+
+                if ($byFriend->isNotEmpty()) {
+                    $resolved = $this->resolveMembersByAmount($byFriend, $amount, $referenceMonth);
+                    if (! empty($resolved)) {
+                        return $resolved;
+                    }
+                }
+            }
         }
 
         // 3. Fallback to WhatsApp pushName
         if (! empty($pushName)) {
-            $byPush = $candidates->filter(fn (SubscriptionMember $m) => $this->namesMatch($m->name, $pushName));
+            $byPush = $candidates->filter(function (SubscriptionMember $m) use ($pushName) {
+                if ($this->namesMatch($m->name, $pushName)) {
+                    return true;
+                }
+                if ($m->friend && $this->namesMatch($m->friend->name, $pushName)) {
+                    return true;
+                }
+
+                return false;
+            });
 
             if ($byPush->isNotEmpty()) {
                 $resolved = $this->resolveMembersByAmount($byPush, $amount, $referenceMonth);
@@ -335,6 +380,28 @@ class WhatsAppReceiptProcessorService
         }
 
         return null;
+    }
+
+    /**
+     * Compare two phone numbers considering Brazilian country code, DDD and 8/9 digits.
+     */
+    public function phonesMatch(?string $phoneA, ?string $phoneB): bool
+    {
+        $digitsA = $this->extractDigits($phoneA);
+        $digitsB = $this->extractDigits($phoneB);
+
+        if (empty($digitsA) || empty($digitsB)) {
+            return false;
+        }
+
+        if ($digitsA === $digitsB) {
+            return true;
+        }
+
+        $last8A = strlen($digitsA) >= 8 ? substr($digitsA, -8) : $digitsA;
+        $last8B = strlen($digitsB) >= 8 ? substr($digitsB, -8) : $digitsB;
+
+        return $last8A === $last8B;
     }
 
     /**

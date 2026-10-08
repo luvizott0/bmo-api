@@ -18,6 +18,8 @@ class SubscriptionMemberResource extends JsonResource
             'id' => $this->id,
             'subscription_id' => $this->subscription_id,
             'user_id' => $this->user_id,
+            'friend_id' => $this->friend_id,
+            'friend' => new FriendResource($this->whenLoaded('friend')),
             'name' => $this->name,
             'contact' => $this->contact,
             'installment_amount' => (float) $this->installment_amount,

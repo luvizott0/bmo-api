@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Enums\SubscriptionPaymentStatus;
 use App\Enums\TransactionStatus;
 use App\Enums\TransactionType;
 use App\Http\Controllers\Controller;
@@ -12,11 +13,14 @@ use App\Http\Requests\Api\UpdateSubscriptionRequest;
 use App\Http\Resources\SubscriptionMemberResource;
 use App\Http\Resources\SubscriptionPaymentResource;
 use App\Http\Resources\SubscriptionResource;
+use App\Models\Friend;
 use App\Models\Subscription;
 use App\Models\SubscriptionMember;
+use App\Models\SubscriptionPayment;
 use App\Models\Transaction;
 use App\Services\SubscriptionService;
 use App\Services\TransactionService;
+use Carbon\CarbonInterface;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -38,7 +42,7 @@ class SubscriptionController extends Controller
 
         $subscriptions = $request->workspace()
             ->subscriptions()
-            ->with(['members.payments', 'creditCard', 'bankAccount', 'category', 'transactions'])
+            ->with(['members.payments', 'members.friend', 'creditCard', 'bankAccount', 'category', 'transactions'])
             ->orderBy('billing_day')
             ->get();
 
@@ -60,6 +64,13 @@ class SubscriptionController extends Controller
 
             if ($request->has('members')) {
                 foreach ($request->input('members') as $memberData) {
+                    if (! empty($memberData['friend_id'])) {
+                        $friend = Friend::where('workspace_id', $workspace->id)->find($memberData['friend_id']);
+                        if ($friend) {
+                            $memberData['name'] = ! empty($memberData['name']) ? $memberData['name'] : $friend->name;
+                            $memberData['contact'] = ! empty($memberData['contact']) ? $memberData['contact'] : $friend->phone;
+                        }
+                    }
                     $subscription->members()->create($memberData);
                 }
             }
@@ -67,7 +78,7 @@ class SubscriptionController extends Controller
             return $subscription;
         });
 
-        $subscription->load(['members.payments', 'creditCard', 'bankAccount', 'category', 'transactions']);
+        $subscription->load(['members.payments', 'members.friend', 'creditCard', 'bankAccount', 'category', 'transactions']);
 
         return (new SubscriptionResource($subscription))
             ->response()
@@ -81,7 +92,7 @@ class SubscriptionController extends Controller
     {
         $this->ensureWorkspaceSubscription($request, $subscription);
 
-        $subscription->load(['members.payments', 'creditCard', 'bankAccount', 'category', 'transactions']);
+        $subscription->load(['members.payments', 'members.friend', 'creditCard', 'bankAccount', 'category', 'transactions']);
 
         return (new SubscriptionResource($subscription))->response();
     }
@@ -102,6 +113,14 @@ class SubscriptionController extends Controller
                 $keptMemberIds = [];
 
                 foreach ($submittedMembers as $memberData) {
+                    if (! empty($memberData['friend_id'])) {
+                        $friend = Friend::where('workspace_id', $subscription->workspace_id)->find($memberData['friend_id']);
+                        if ($friend) {
+                            $memberData['name'] = ! empty($memberData['name']) ? $memberData['name'] : $friend->name;
+                            $memberData['contact'] = ! empty($memberData['contact']) ? $memberData['contact'] : $friend->phone;
+                        }
+                    }
+
                     if (! empty($memberData['id'])) {
                         $member = $subscription->members()->find($memberData['id']);
                         if ($member) {
@@ -110,6 +129,7 @@ class SubscriptionController extends Controller
                                 'installment_amount' => $memberData['installment_amount'],
                                 'contact' => $memberData['contact'] ?? null,
                                 'user_id' => $memberData['user_id'] ?? null,
+                                'friend_id' => $memberData['friend_id'] ?? null,
                             ]);
                             $keptMemberIds[] = $member->id;
 
@@ -122,6 +142,7 @@ class SubscriptionController extends Controller
                         'installment_amount' => $memberData['installment_amount'],
                         'contact' => $memberData['contact'] ?? null,
                         'user_id' => $memberData['user_id'] ?? null,
+                        'friend_id' => $memberData['friend_id'] ?? null,
                     ]);
                     $keptMemberIds[] = $newMember->id;
                 }
@@ -157,7 +178,7 @@ class SubscriptionController extends Controller
             }
         });
 
-        $subscription->load(['members.payments', 'creditCard', 'bankAccount', 'category', 'transactions']);
+        $subscription->load(['members.payments', 'members.friend', 'creditCard', 'bankAccount', 'category', 'transactions']);
 
         return (new SubscriptionResource($subscription))->response();
     }
@@ -183,7 +204,17 @@ class SubscriptionController extends Controller
     {
         $this->ensureWorkspaceSubscription($request, $subscription);
 
-        $member = $subscription->members()->create($request->validated());
+        $data = $request->validated();
+        if (! empty($data['friend_id'])) {
+            $friend = Friend::where('workspace_id', $subscription->workspace_id)->find($data['friend_id']);
+            if ($friend) {
+                $data['name'] = ! empty($data['name']) ? $data['name'] : $friend->name;
+                $data['contact'] = ! empty($data['contact']) ? $data['contact'] : $friend->phone;
+            }
+        }
+
+        $member = $subscription->members()->create($data);
+        $member->load('friend');
 
         return (new SubscriptionMemberResource($member))
             ->response()
@@ -287,7 +318,7 @@ class SubscriptionController extends Controller
             ]);
         }
 
-        $subscription->load(['members.payments', 'creditCard', 'bankAccount', 'category', 'transactions']);
+        $subscription->load(['members.payments', 'members.friend', 'creditCard', 'bankAccount', 'category', 'transactions']);
 
         return response()->json([
             'message' => 'Subscription paid successfully.',
@@ -319,11 +350,121 @@ class SubscriptionController extends Controller
             }
         }
 
-        $subscription->load(['members.payments', 'creditCard', 'bankAccount', 'category', 'transactions']);
+        $subscription->load(['members.payments', 'members.friend', 'creditCard', 'bankAccount', 'category', 'transactions']);
 
         return response()->json([
             'message' => 'Subscription marked as unpaid.',
             'subscription' => new SubscriptionResource($subscription),
+        ]);
+    }
+
+    /**
+     * Get complete payment history for workspace subscriptions (both shared member payments & individual).
+     */
+    public function history(Request $request): JsonResponse
+    {
+        $workspace = $request->workspace();
+        $subscriptionId = $request->query('subscription_id');
+        $referenceMonth = $request->query('reference_month');
+
+        // 1. Shared member payments marked as Paid
+        $memberPaymentsQuery = SubscriptionPayment::where('status', SubscriptionPaymentStatus::Paid)
+            ->whereHas('member.subscription', function ($q) use ($workspace, $subscriptionId) {
+                $q->where('workspace_id', $workspace->id);
+                if ($subscriptionId) {
+                    $q->where('id', $subscriptionId);
+                }
+            })
+            ->with(['member.subscription', 'member.friend']);
+
+        if ($referenceMonth) {
+            $memberPaymentsQuery->where('reference_month', $referenceMonth);
+        }
+
+        $memberPayments = $memberPaymentsQuery->get()->map(function ($payment) {
+            $sub = $payment->member->subscription;
+
+            return [
+                'id' => 'payment_'.$payment->id,
+                'payment_id' => $payment->id,
+                'type' => 'shared_member',
+                'subscription_id' => $sub->id,
+                'subscription_name' => $sub->service_name,
+                'subscription_color' => $sub->color_hex ?? '#6366f1',
+                'member_id' => $payment->member->id,
+                'member_name' => $payment->member->name,
+                'member_contact' => $payment->member->contact ?? $payment->member->friend?->phone,
+                'friend_id' => $payment->member->friend_id,
+                'reference_month' => $payment->reference_month,
+                'amount' => (float) $payment->amount,
+                'payment_date' => $payment->payment_date?->format('Y-m-d') ?? (string) $payment->payment_date,
+                'payment_method' => $payment->pix_e2e_id ? 'Pix (WhatsApp)' : 'Manual',
+                'pix_e2e_id' => $payment->pix_e2e_id,
+                'receipt_metadata' => $payment->receipt_metadata,
+                'created_at' => $payment->created_at?->toISOString(),
+            ];
+        });
+
+        // 2. Individual subscription transactions
+        $transactionsQuery = Transaction::where('workspace_id', $workspace->id)
+            ->whereNotNull('subscription_id')
+            ->where('type', TransactionType::Expense)
+            ->where('status', TransactionStatus::Paid)
+            ->with(['subscription', 'creditCard', 'bankAccount']);
+
+        if ($subscriptionId) {
+            $transactionsQuery->where('subscription_id', $subscriptionId);
+        }
+
+        if ($referenceMonth) {
+            $transactionsQuery->where('occurred_at', 'like', "{$referenceMonth}%");
+        }
+
+        $transactions = $transactionsQuery->get()
+            ->filter(fn ($t) => $t->subscription !== null)
+            ->map(function ($tx) {
+                $sub = $tx->subscription;
+                $refMonth = $tx->occurred_at instanceof CarbonInterface
+                    ? $tx->occurred_at->format('Y-m')
+                    : substr((string) $tx->occurred_at, 0, 7);
+
+                $payMethod = 'Manual';
+                if ($tx->creditCard) {
+                    $payMethod = 'Cartão: '.$tx->creditCard->name;
+                } elseif ($tx->bankAccount) {
+                    $payMethod = 'Conta: '.$tx->bankAccount->name;
+                }
+
+                return [
+                    'id' => 'trans_'.$tx->id,
+                    'transaction_id' => $tx->id,
+                    'type' => 'individual',
+                    'subscription_id' => $sub->id,
+                    'subscription_name' => $sub->service_name,
+                    'subscription_color' => $sub->color_hex ?? '#6366f1',
+                    'member_id' => null,
+                    'member_name' => 'Assinatura Individual',
+                    'member_contact' => null,
+                    'friend_id' => null,
+                    'reference_month' => $refMonth,
+                    'amount' => (float) $tx->amount,
+                    'payment_date' => $tx->occurred_at instanceof CarbonInterface ? $tx->occurred_at->toDateString() : (string) $tx->occurred_at,
+                    'payment_method' => $payMethod,
+                    'pix_e2e_id' => null,
+                    'receipt_metadata' => null,
+                    'created_at' => $tx->created_at?->toISOString(),
+                ];
+            });
+
+        // Combine and sort by payment_date descending
+        $history = $memberPayments->concat($transactions)
+            ->sortByDesc(fn ($item) => ($item['payment_date'] ?? '').'_'.($item['created_at'] ?? ''))
+            ->values();
+
+        return response()->json([
+            'data' => $history,
+            'total_paid' => (float) $history->sum('amount'),
+            'count' => $history->count(),
         ]);
     }
 

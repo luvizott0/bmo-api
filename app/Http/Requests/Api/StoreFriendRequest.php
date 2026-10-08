@@ -4,7 +4,7 @@ namespace App\Http\Requests\Api;
 
 use Illuminate\Foundation\Http\FormRequest;
 
-class AddSubscriptionMemberRequest extends FormRequest
+class StoreFriendRequest extends FormRequest
 {
     /**
      * Determine if the user is authorized to make this request.
@@ -22,11 +22,9 @@ class AddSubscriptionMemberRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'name' => ['required_without:friend_id', 'nullable', 'string', 'max:150'],
-            'installment_amount' => ['required', 'numeric', 'min:0.01'],
-            'contact' => ['nullable', 'string', 'max:150'],
-            'user_id' => ['nullable', 'integer', 'exists:users,id'],
-            'friend_id' => ['nullable', 'integer', 'exists:friends,id'],
+            'name' => ['required', 'string', 'max:150'],
+            'phone' => ['required', 'string', 'max:50'],
+            'notes' => ['nullable', 'string', 'max:500'],
         ];
     }
 }

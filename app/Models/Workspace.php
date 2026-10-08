@@ -76,6 +76,11 @@ class Workspace extends Model
         return $this->hasMany(Subscription::class);
     }
 
+    public function friends(): HasMany
+    {
+        return $this->hasMany(Friend::class);
+    }
+
     public function fixedBills(): HasMany
     {
         return $this->hasMany(FixedBill::class);
