@@ -122,4 +122,43 @@ class WhatsAppNotificationService
 
         return null;
     }
+
+    /**
+     * Fetch list of WhatsApp groups the instance is currently participating in.
+     *
+     * @return array<array{id: string, subject: string}>
+     */
+    public function fetchAllGroups(): array
+    {
+        $baseUrl = rtrim($this->baseUrl ?: config('services.evolution.url'), '/');
+        $apiKey = $this->apiKey ?: config('services.evolution.api_key');
+        $instance = $this->instance ?: config('services.evolution.instance');
+
+        $url = "{$baseUrl}/group/fetchAllGroups/{$instance}?getParticipants=false";
+
+        try {
+            $response = Http::timeout(15)
+                ->withHeaders([
+                    'apikey' => $apiKey,
+                ])
+                ->get($url);
+
+            if ($response->successful()) {
+                $data = $response->json();
+
+                return is_array($data) ? $data : [];
+            }
+
+            Log::warning('WhatsAppNotificationService: failed to fetch groups', [
+                'status' => $response->status(),
+                'body' => $response->body(),
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('WhatsAppNotificationService fetchAllGroups error', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return [];
+    }
 }

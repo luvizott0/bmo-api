@@ -75,6 +75,8 @@ class SendSubscriptionRemindersCommand extends Command
         }
 
         $lines[] = '';
+        $lines[] = '🔑 *Pix CPF:* 390.042.248-66 (conta do Nubank)';
+        $lines[] = '';
         $lines[] = '💡 _Lembrando: pode mandar o comprovante do Pix direto aqui no grupo que eu já identifico e dou baixa automaticamente!_ 🤖✨';
 
         $message = implode("\n", $lines);

@@ -96,6 +96,7 @@ test('sends humorous reminder on day 9 with shared subscriptions amounts', funct
             expect($text)->toContain('Xerife BMO passando aqui para relembrar vocês que o pagamento das assinaturas é amanhã');
             expect($text)->toContain('• *Netflix Premium:* R$ 38,45 cada');
             expect($text)->toContain('• *Spotify Family:* R$ 6,82 cada');
+            expect($text)->toContain('Pix CPF:* 390.042.248-66 (conta do Nubank)');
             expect($text)->not->toContain('Mercado Livre');
 
             return true;
