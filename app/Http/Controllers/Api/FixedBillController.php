@@ -3,12 +3,15 @@
 namespace App\Http\Controllers\Api;
 
 use App\Enums\TransactionStatus;
+use App\Enums\TransactionType;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Api\PayFixedBillRequest;
 use App\Http\Requests\Api\StoreFixedBillRequest;
 use App\Http\Requests\Api\UpdateFixedBillRequest;
 use App\Http\Resources\FixedBillResource;
 use App\Http\Resources\TransactionResource;
+use App\Models\BankAccount;
+use App\Models\CreditCard;
 use App\Models\FixedBill;
 use App\Services\TransactionService;
 use Illuminate\Http\JsonResponse;
@@ -120,8 +123,38 @@ class FixedBillController extends Controller
 
         $amount = (float) $request->input('amount', $fixedBill->estimated_amount);
         $paymentDate = $request->input('payment_date', now()->toDateString());
-        $bankAccountId = $request->input('bank_account_id', $fixedBill->preferred_bank_account_id);
         $creditCardId = $request->input('credit_card_id');
+
+        if ($creditCardId) {
+            $bankAccountId = null;
+        } elseif ($request->exists('bank_account_id')) {
+            $bankAccountId = $request->input('bank_account_id');
+        } else {
+            $bankAccountId = $fixedBill->preferred_bank_account_id;
+        }
+
+        // Se uma conta bancária foi definida, certificar que ela existe e pertence ao workspace da conta fixa
+        if ($bankAccountId) {
+            $validAccount = BankAccount::where('id', $bankAccountId)
+                ->where('workspace_id', $fixedBill->workspace_id)
+                ->exists();
+
+            if (! $validAccount) {
+                $bankAccountId = null;
+            }
+        }
+
+        // Se um cartão foi definido, certificar que ele existe e pertence ao workspace da conta fixa
+        if ($creditCardId) {
+            $validCard = CreditCard::where('id', $creditCardId)
+                ->where('workspace_id', $fixedBill->workspace_id)
+                ->exists();
+
+            if (! $validCard) {
+                $creditCardId = null;
+            }
+        }
+
         $referenceMonth = substr($paymentDate, 0, 7);
 
         $existing = $fixedBill->transactions()
@@ -143,7 +176,7 @@ class FixedBillController extends Controller
                 'created_by_user_id' => $request->user()->id,
                 'fixed_bill_id' => $fixedBill->id,
                 'category_id' => $fixedBill->category_id,
-                'type' => $fixedBill->type,
+                'type' => $fixedBill->type ?? TransactionType::Expense,
                 'amount' => $amount,
                 'occurred_at' => $paymentDate,
                 'status' => TransactionStatus::Paid,

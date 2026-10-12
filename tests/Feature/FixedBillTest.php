@@ -205,6 +205,54 @@ test('cannot liquidate fixed bill linking both bank account and credit card', fu
         ->assertJsonValidationErrors(['bank_account_id']);
 });
 
+test('can liquidate fixed bill with explicit null bank account even if preferred account exists', function () {
+    $bill = FixedBill::factory()->create([
+        'workspace_id' => $this->workspace->id,
+        'type' => TransactionType::Expense,
+        'estimated_amount' => 150.00,
+        'preferred_bank_account_id' => $this->account->id,
+    ]);
+
+    $response = $this->actingAs($this->user)
+        ->postJson("/api/fixed-bills/{$bill->id}/pay", [
+            'amount' => 150.00,
+            'payment_date' => '2026-09-10',
+            'bank_account_id' => null,
+        ]);
+
+    $response->assertCreated()
+        ->assertJsonPath('transaction.bank_account_id', null)
+        ->assertJsonPath('transaction.credit_card_id', null);
+
+    // Account balance should remain unchanged at 2500
+    expect((float) $this->account->fresh()->current_balance)->toBe(2500.0);
+});
+
+test('paying fixed bill with credit card overrides preferred bank account', function () {
+    $bill = FixedBill::factory()->create([
+        'workspace_id' => $this->workspace->id,
+        'type' => TransactionType::Expense,
+        'estimated_amount' => 200.00,
+        'preferred_bank_account_id' => $this->account->id,
+    ]);
+
+    $card = CreditCard::factory()->create(['workspace_id' => $this->workspace->id]);
+
+    $response = $this->actingAs($this->user)
+        ->postJson("/api/fixed-bills/{$bill->id}/pay", [
+            'amount' => 200.00,
+            'payment_date' => '2026-09-10',
+            'credit_card_id' => $card->id,
+        ]);
+
+    $response->assertCreated()
+        ->assertJsonPath('transaction.bank_account_id', null)
+        ->assertJsonPath('transaction.credit_card_id', $card->id);
+
+    // Bank account balance should not be touched
+    expect((float) $this->account->fresh()->current_balance)->toBe(2500.0);
+});
+
 test('user can unpay fixed bill and account balance is restored', function () {
     $bill = FixedBill::factory()->create([
         'workspace_id' => $this->workspace->id,
