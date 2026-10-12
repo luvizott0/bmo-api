@@ -419,63 +419,95 @@ class WhatsAppReceiptProcessorService
         return ! empty($members) ? $members[0] : null;
     }
 
+    public const AMOUNT_TOLERANCE = 0.99;
+
     /**
-     * Resolve single member or multiple members combination matching the amount.
+     * Resolve single member or multiple members combination matching the amount within tolerance.
      *
      * @param  Collection<int, SubscriptionMember>  $matchedMembers
      * @return array<SubscriptionMember>|null
      */
     private function resolveMembersByAmount(Collection $matchedMembers, float $amount, string $referenceMonth): ?array
     {
-        // 1. Check if a single member's installment matches (within 1.00 tolerance)
-        $bySingleAmount = $matchedMembers->filter(function (SubscriptionMember $m) use ($amount) {
-            return abs(((float) $m->installment_amount) - $amount) < 1.00;
-        });
+        $tolerance = self::AMOUNT_TOLERANCE;
 
-        if ($bySingleAmount->count() === 1) {
-            return [$bySingleAmount->first()];
-        }
-
-        if ($bySingleAmount->count() > 1) {
-            // Prioritize one pending for this reference month
-            $pending = $bySingleAmount->filter(function (SubscriptionMember $m) use ($referenceMonth) {
-                $payment = $m->payments->firstWhere('reference_month', $referenceMonth);
-
-                return ! $payment || $payment->status !== SubscriptionPaymentStatus::Paid;
-            });
-
-            return [$pending->first() ?: $bySingleAmount->first()];
-        }
-
-        // 2. Multi-Subscription Combination (Combo) match
+        // Separate members pending for this reference month
         $pendingMembers = $matchedMembers->filter(function (SubscriptionMember $m) use ($referenceMonth) {
             $payment = $m->payments->firstWhere('reference_month', $referenceMonth);
 
             return ! $payment || $payment->status !== SubscriptionPaymentStatus::Paid;
         });
 
-        $comboPool = $pendingMembers->isNotEmpty() ? $pendingMembers : $matchedMembers;
-        $combo = $this->findSubsetSum($comboPool->values()->all(), $amount);
+        // 1. Check pending members first
+        if ($pendingMembers->isNotEmpty()) {
+            $pendingSingles = $pendingMembers->filter(function (SubscriptionMember $m) use ($amount, $tolerance) {
+                return round(abs(((float) $m->installment_amount) - $amount), 2) <= $tolerance;
+            });
 
-        if (! empty($combo)) {
-            return $combo;
+            $bestPendingSingle = $pendingSingles->isNotEmpty()
+                ? $pendingSingles->sortBy(fn (SubscriptionMember $m) => round(abs(((float) $m->installment_amount) - $amount), 2))->first()
+                : null;
+
+            $pendingCombo = $pendingMembers->count() >= 2
+                ? $this->findSubsetSum($pendingMembers->values()->all(), $amount, $tolerance)
+                : null;
+
+            if ($bestPendingSingle && $pendingCombo) {
+                $singleDiff = round(abs(((float) $bestPendingSingle->installment_amount) - $amount), 2);
+                $comboSum = collect($pendingCombo)->sum(fn ($m) => (float) $m->installment_amount);
+                $comboDiff = round(abs($comboSum - $amount), 2);
+
+                return ($comboDiff < $singleDiff) ? $pendingCombo : [$bestPendingSingle];
+            }
+
+            if ($bestPendingSingle) {
+                return [$bestPendingSingle];
+            }
+
+            if ($pendingCombo) {
+                return $pendingCombo;
+            }
         }
 
-        // If only 1 candidate existed, return it even if amount has slight variance
-        if ($matchedMembers->count() === 1) {
-            return [$matchedMembers->first()];
+        // 2. Fallback to all matched members (if none pending or pending members didn't match within tolerance)
+        $allSingles = $matchedMembers->filter(function (SubscriptionMember $m) use ($amount, $tolerance) {
+            return round(abs(((float) $m->installment_amount) - $amount), 2) <= $tolerance;
+        });
+
+        $bestAllSingle = $allSingles->isNotEmpty()
+            ? $allSingles->sortBy(fn (SubscriptionMember $m) => round(abs(((float) $m->installment_amount) - $amount), 2))->first()
+            : null;
+
+        $allCombo = $matchedMembers->count() >= 2
+            ? $this->findSubsetSum($matchedMembers->values()->all(), $amount, $tolerance)
+            : null;
+
+        if ($bestAllSingle && $allCombo) {
+            $singleDiff = round(abs(((float) $bestAllSingle->installment_amount) - $amount), 2);
+            $comboSum = collect($allCombo)->sum(fn ($m) => (float) $m->installment_amount);
+            $comboDiff = round(abs($comboSum - $amount), 2);
+
+            return ($comboDiff < $singleDiff) ? $allCombo : [$bestAllSingle];
+        }
+
+        if ($bestAllSingle) {
+            return [$bestAllSingle];
+        }
+
+        if ($allCombo) {
+            return $allCombo;
         }
 
         return null;
     }
 
     /**
-     * Find a subset of members whose installment amounts sum to $targetAmount (tolerance 0.10).
+     * Find a subset of members whose installment amounts sum to $targetAmount (tolerance 0.99).
      *
      * @param  array<SubscriptionMember>  $members
      * @return array<SubscriptionMember>|null
      */
-    private function findSubsetSum(array $members, float $targetAmount, float $tolerance = 0.10): ?array
+    private function findSubsetSum(array $members, float $targetAmount, float $tolerance = self::AMOUNT_TOLERANCE): ?array
     {
         $n = count($members);
         if ($n < 2) {
@@ -501,8 +533,11 @@ class WhatsAppReceiptProcessorService
                 }
             }
 
-            $diff = abs($sum - $targetAmount);
-            if ($diff <= $smallestDiff) {
+            $diff = round(abs($sum - $targetAmount), 2);
+            if ($bestMatch === null && $diff <= $smallestDiff) {
+                $smallestDiff = $diff;
+                $bestMatch = $combo;
+            } elseif ($diff < $smallestDiff) {
                 $smallestDiff = $diff;
                 $bestMatch = $combo;
             }

@@ -466,3 +466,298 @@ test('webhook handles multi-subscription combo payment in a single pix', functio
     expect($txs->count())->toBe(2);
     expect((float) $txs->sum('amount'))->toBe(15.80);
 });
+
+test('webhook handles combo payment with cents gap up to 99 cents more or less', function () {
+    $sub2 = Subscription::factory()->create([
+        'workspace_id' => $this->workspace->id,
+        'service_name' => 'Disney Plus',
+        'total_amount' => 45.00,
+        'is_active' => true,
+    ]);
+
+    // Member has Netflix (15.00) and Disney Plus (18.50) -> total 33.50
+    $memberSub1 = SubscriptionMember::factory()->create([
+        'subscription_id' => $this->subscription->id,
+        'name' => 'Carlos Ferreira',
+        'contact' => '11988880001',
+        'installment_amount' => 15.00,
+        'is_active' => true,
+    ]);
+
+    $memberSub2 = SubscriptionMember::factory()->create([
+        'subscription_id' => $sub2->id,
+        'name' => 'Carlos Ferreira',
+        'contact' => '11988880001',
+        'installment_amount' => 18.50,
+        'is_active' => true,
+    ]);
+
+    // Carlos transferred 34.00 (gap of +0.50 cents relative to 33.50)
+    $mockExtractor = Mockery::mock(ReceiptExtractorService::class);
+    $mockExtractor->shouldReceive('extractFromBase64')
+        ->once()
+        ->andReturn([
+            'success' => true,
+            'amount' => 34.00,
+            'payment_date' => '2026-10-12',
+            'transaction_id' => 'E1111111120261012CARLOS3400PAGTO',
+            'payer_name' => 'Carlos Ferreira',
+            'recipient_name' => 'Calebe Luvizotto',
+        ]);
+    $this->app->instance(ReceiptExtractorService::class, $mockExtractor);
+
+    $mockNotifier = Mockery::mock(WhatsAppNotificationService::class);
+    $mockNotifier->shouldReceive('sendText')
+        ->once()
+        ->withArgs(function ($remoteJid, $text, $msgId) {
+            return str_contains($text, 'Combo')
+                && str_contains($text, 'Carlos Ferreira')
+                && str_contains($text, '34,00')
+                && str_contains($text, 'Netflix Premium')
+                && str_contains($text, 'Disney Plus')
+                && $msgId === 'MSG_CARLOS_001';
+        })
+        ->andReturn(true);
+    $this->app->instance(WhatsAppNotificationService::class, $mockNotifier);
+
+    $payload = [
+        'event' => 'messages.upsert',
+        'data' => [
+            'key' => [
+                'remoteJid' => '120363028374928374@g.us',
+                'fromMe' => false,
+                'id' => 'MSG_CARLOS_001',
+                'participant' => '5511988880001@s.whatsapp.net',
+            ],
+            'pushName' => 'Carlos',
+            'messageType' => 'imageMessage',
+            'message' => [
+                'imageMessage' => ['mimetype' => 'image/jpeg'],
+                'base64' => base64_encode('fake-image-bytes'),
+            ],
+        ],
+    ];
+
+    $response = $this->postJson('/api/webhooks/whatsapp', $payload, [
+        'X-Webhook-Token' => 'test_secret_123',
+    ]);
+
+    $response->assertOk();
+
+    // Verify both subscriptions were marked as paid
+    $pay1 = SubscriptionPayment::where('subscription_member_id', $memberSub1->id)
+        ->where('reference_month', '2026-10')
+        ->first();
+    $pay2 = SubscriptionPayment::where('subscription_member_id', $memberSub2->id)
+        ->where('reference_month', '2026-10')
+        ->first();
+
+    expect($pay1)->not->toBeNull()
+        ->and($pay1->status)->toBe(SubscriptionPaymentStatus::Paid)
+        ->and($pay2)->not->toBeNull()
+        ->and($pay2->status)->toBe(SubscriptionPaymentStatus::Paid);
+});
+
+test('webhook accurately separates specific subset of subscriptions when paying combo among 3 active subscriptions', function () {
+    $sub2 = Subscription::factory()->create([
+        'workspace_id' => $this->workspace->id,
+        'service_name' => 'HBO Max',
+        'is_active' => true,
+    ]);
+    $sub3 = Subscription::factory()->create([
+        'workspace_id' => $this->workspace->id,
+        'service_name' => 'Spotify Família',
+        'is_active' => true,
+    ]);
+
+    // Member has 3 subscriptions: Netflix (10.00), HBO (15.00), Spotify (20.00)
+    $memberSub1 = SubscriptionMember::factory()->create([
+        'subscription_id' => $this->subscription->id,
+        'name' => 'Mariana Souza',
+        'contact' => '11977770002',
+        'installment_amount' => 10.00,
+        'is_active' => true,
+    ]);
+    $memberSub2 = SubscriptionMember::factory()->create([
+        'subscription_id' => $sub2->id,
+        'name' => 'Mariana Souza',
+        'contact' => '11977770002',
+        'installment_amount' => 15.00,
+        'is_active' => true,
+    ]);
+    $memberSub3 = SubscriptionMember::factory()->create([
+        'subscription_id' => $sub3->id,
+        'name' => 'Mariana Souza',
+        'contact' => '11977770002',
+        'installment_amount' => 20.00,
+        'is_active' => true,
+    ]);
+
+    // Mariana pays for Sub 1 + Sub 2 (10 + 15 = 25.00), but sends 24.30 (-0.70 gap)
+    $mockExtractor = Mockery::mock(ReceiptExtractorService::class);
+    $mockExtractor->shouldReceive('extractFromBase64')
+        ->once()
+        ->andReturn([
+            'success' => true,
+            'amount' => 24.30,
+            'payment_date' => '2026-10-12',
+            'transaction_id' => 'E2222222220261012MARIANA2430',
+            'payer_name' => 'Mariana Souza',
+            'recipient_name' => 'Calebe Luvizotto',
+        ]);
+    $this->app->instance(ReceiptExtractorService::class, $mockExtractor);
+
+    $mockNotifier = Mockery::mock(WhatsAppNotificationService::class);
+    $mockNotifier->shouldReceive('sendText')
+        ->once()
+        ->withArgs(function ($remoteJid, $text) {
+            return str_contains($text, 'Combo')
+                && str_contains($text, 'Mariana Souza')
+                && str_contains($text, 'Netflix Premium')
+                && str_contains($text, 'HBO Max')
+                && ! str_contains($text, 'Spotify Família');
+        })
+        ->andReturn(true);
+    $this->app->instance(WhatsAppNotificationService::class, $mockNotifier);
+
+    $payload = [
+        'event' => 'messages.upsert',
+        'data' => [
+            'key' => [
+                'remoteJid' => '120363028374928374@g.us',
+                'fromMe' => false,
+                'id' => 'MSG_MARIANA_001',
+                'participant' => '5511977770002@s.whatsapp.net',
+            ],
+            'pushName' => 'Mari',
+            'messageType' => 'imageMessage',
+            'message' => [
+                'imageMessage' => ['mimetype' => 'image/jpeg'],
+                'base64' => base64_encode('fake-image-bytes'),
+            ],
+        ],
+    ];
+
+    $response = $this->postJson('/api/webhooks/whatsapp', $payload, [
+        'X-Webhook-Token' => 'test_secret_123',
+    ]);
+
+    $response->assertOk();
+
+    // Netflix and HBO should be paid, Spotify should NOT be paid
+    expect(SubscriptionPayment::where('subscription_member_id', $memberSub1->id)->where('status', SubscriptionPaymentStatus::Paid)->exists())->toBeTrue()
+        ->and(SubscriptionPayment::where('subscription_member_id', $memberSub2->id)->where('status', SubscriptionPaymentStatus::Paid)->exists())->toBeTrue()
+        ->and(SubscriptionPayment::where('subscription_member_id', $memberSub3->id)->exists())->toBeFalse();
+});
+
+test('webhook processes single subscription payment with cents gap up to 99 cents', function () {
+    // Parcela de 15.00, pago 15.65 (+0.65 de diferença)
+    $mockExtractor = Mockery::mock(ReceiptExtractorService::class);
+    $mockExtractor->shouldReceive('extractFromBase64')
+        ->once()
+        ->andReturn([
+            'success' => true,
+            'amount' => 15.65,
+            'payment_date' => '2026-10-12',
+            'transaction_id' => 'E33333333320261012JOAO1565',
+            'payer_name' => 'João Silva',
+            'recipient_name' => 'Calebe Luvizotto',
+        ]);
+    $this->app->instance(ReceiptExtractorService::class, $mockExtractor);
+
+    $mockNotifier = Mockery::mock(WhatsAppNotificationService::class);
+    $mockNotifier->shouldReceive('sendText')
+        ->once()
+        ->withArgs(function ($remoteJid, $text) {
+            return str_contains($text, 'Pagamento Confirmado')
+                && str_contains($text, 'João Silva')
+                && str_contains($text, '15,65');
+        })
+        ->andReturn(true);
+    $this->app->instance(WhatsAppNotificationService::class, $mockNotifier);
+
+    $payload = [
+        'event' => 'messages.upsert',
+        'data' => [
+            'key' => [
+                'remoteJid' => '120363028374928374@g.us',
+                'fromMe' => false,
+                'id' => 'MSG_JOAO_002',
+                'participant' => '5511999998888@s.whatsapp.net',
+            ],
+            'pushName' => 'João',
+            'messageType' => 'imageMessage',
+            'message' => [
+                'imageMessage' => ['mimetype' => 'image/jpeg'],
+                'base64' => base64_encode('fake-image-bytes'),
+            ],
+        ],
+    ];
+
+    $response = $this->postJson('/api/webhooks/whatsapp', $payload, [
+        'X-Webhook-Token' => 'test_secret_123',
+    ]);
+
+    $response->assertOk();
+
+    $payment = SubscriptionPayment::where('subscription_member_id', $this->member->id)
+        ->where('reference_month', '2026-10')
+        ->first();
+
+    expect($payment)->not->toBeNull()
+        ->and($payment->status)->toBe(SubscriptionPaymentStatus::Paid);
+});
+
+test('webhook does not match when gap exceeds 99 cents', function () {
+    // Parcela de 15.00, pago 16.50 (+1.50 de diferença, ultrapassa o gap de 0.99)
+    $mockExtractor = Mockery::mock(ReceiptExtractorService::class);
+    $mockExtractor->shouldReceive('extractFromBase64')
+        ->once()
+        ->andReturn([
+            'success' => true,
+            'amount' => 16.50,
+            'payment_date' => '2026-10-12',
+            'transaction_id' => 'E44444444420261012JOAO1650',
+            'payer_name' => 'João Silva',
+            'recipient_name' => 'Calebe Luvizotto',
+        ]);
+    $this->app->instance(ReceiptExtractorService::class, $mockExtractor);
+
+    $mockNotifier = Mockery::mock(WhatsAppNotificationService::class);
+    $mockNotifier->shouldReceive('sendText')
+        ->once()
+        ->withArgs(function ($remoteJid, $text) {
+            return str_contains($text, 'não identifiquei nenhuma assinatura pendente correspondente');
+        })
+        ->andReturn(true);
+    $this->app->instance(WhatsAppNotificationService::class, $mockNotifier);
+
+    $payload = [
+        'event' => 'messages.upsert',
+        'data' => [
+            'key' => [
+                'remoteJid' => '120363028374928374@g.us',
+                'fromMe' => false,
+                'id' => 'MSG_JOAO_003',
+                'participant' => '5511999998888@s.whatsapp.net',
+            ],
+            'pushName' => 'João',
+            'messageType' => 'imageMessage',
+            'message' => [
+                'imageMessage' => ['mimetype' => 'image/jpeg'],
+                'base64' => base64_encode('fake-image-bytes'),
+            ],
+        ],
+    ];
+
+    $response = $this->postJson('/api/webhooks/whatsapp', $payload, [
+        'X-Webhook-Token' => 'test_secret_123',
+    ]);
+
+    $response->assertOk();
+
+    // No payment recorded
+    expect(SubscriptionPayment::where('subscription_member_id', $this->member->id)->where('reference_month', '2026-10')->exists())->toBeFalse();
+});
+
+
