@@ -460,109 +460,117 @@ def fetch_imap_invoices(
         return {"success": False, "error": f"IMAP authentication failed: {str(e)}", "invoices": []}
 
     try:
-        status, _ = mail.select(folder, readonly=True)
-        if status != "OK":
-            return {"success": False, "error": f"Could not select folder {folder}", "invoices": []}
-
-        status, data = mail.search(None, "ALL")
-        if status != "OK" or not data or not data[0]:
-            return {"success": True, "invoices": [], "scanned": 0}
-
-        msg_ids = data[0].split()
-        recent_ids = msg_ids[-max_messages:] if len(msg_ids) > max_messages else msg_ids
-        recent_ids = list(reversed(recent_ids))  # Newest first
+        folders_to_scan = [folder]
+        if folder.upper() == "INBOX":
+            folders_to_scan.append("Junk")
 
         invoices = []
-        scanned = len(recent_ids)
-        target_keywords = ("cpfl", "alares", "energia", "elétric", "eletric", "fatura", "conta", "boleto", "segunda via", "nota fiscal")
+        scanned = 0
+        target_keywords = ("cpfl", "alares", "energia", "elétric", "eletric", "força e luz", "forca e luz")
 
-        # Batch fetch headers in chunks of 100 for high speed
-        candidate_msg_ids = []
-        batch_size = 100
-        for i in range(0, len(recent_ids), batch_size):
-            batch = recent_ids[i : i + batch_size]
-            batch_set = b",".join(batch)
-            h_status, h_data = mail.fetch(batch_set, "(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE MESSAGE-ID)])")
-            if h_status != "OK" or not h_data:
+        for current_folder in folders_to_scan:
+            status, _ = mail.select(current_folder, readonly=True)
+            if status != "OK":
+                if current_folder == folder:
+                    return {"success": False, "error": f"Could not select folder {folder}", "invoices": []}
                 continue
 
-            for item in h_data:
-                if not isinstance(item, tuple) or len(item) < 2:
+            status, data = mail.search(None, "ALL")
+            if status != "OK" or not data or not data[0]:
+                continue
+
+            msg_ids = data[0].split()
+            folder_limit = max_messages if current_folder == folder else min(100, max_messages)
+            recent_ids = msg_ids[-folder_limit:] if len(msg_ids) > folder_limit else msg_ids
+            recent_ids = list(reversed(recent_ids))  # Newest first
+            scanned += len(recent_ids)
+
+            # Batch fetch headers in chunks of 100 for high speed
+            candidate_msg_ids = []
+            batch_size = 100
+            for i in range(0, len(recent_ids), batch_size):
+                batch = recent_ids[i : i + batch_size]
+                batch_set = b",".join(batch)
+                h_status, h_data = mail.fetch(batch_set, "(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE MESSAGE-ID)])")
+                if h_status != "OK" or not h_data:
                     continue
-                # Extract msg_id from response line e.g. b'1234 (BODY[HEADER.FIELDS ...'
-                envelope_line = item[0].decode("utf-8", errors="ignore")
-                m_id_match = re.match(r"^\s*(\d+)", envelope_line)
-                if not m_id_match:
+
+                for item in h_data:
+                    if not isinstance(item, tuple) or len(item) < 2:
+                        continue
+                    envelope_line = item[0].decode("utf-8", errors="ignore")
+                    m_id_match = re.match(r"^\s*(\d+)", envelope_line)
+                    if not m_id_match:
+                        continue
+                    cur_msg_id = m_id_match.group(1).encode("utf-8")
+
+                    raw_header_bytes = item[1]
+                    header_msg = email.message_from_bytes(raw_header_bytes)
+                    subject = _decode_mime_header(header_msg.get("Subject"))
+                    sender = _decode_mime_header(header_msg.get("From"))
+                    message_id_hdr = _decode_mime_header(header_msg.get("Message-ID")) or f"imap-{current_folder}-{cur_msg_id.decode()}"
+                    date_hdr = _decode_mime_header(header_msg.get("Date"))
+
+                    combined_meta = f"{sender} {subject}".lower()
+                    if any(kw in combined_meta for kw in target_keywords):
+                        candidate_msg_ids.append((cur_msg_id, subject, sender, message_id_hdr, date_hdr, combined_meta))
+
+            for msg_id, subject, sender, message_id_hdr, date_hdr, combined_meta in candidate_msg_ids:
+                # Fetch full message only for candidates
+                f_status, f_data = mail.fetch(msg_id, "(BODY.PEEK[])")
+                if f_status != "OK" or not f_data or not f_data[0]:
                     continue
-                cur_msg_id = m_id_match.group(1).encode("utf-8")
 
-                raw_header_bytes = item[1]
-                header_msg = email.message_from_bytes(raw_header_bytes)
-                subject = _decode_mime_header(header_msg.get("Subject"))
-                sender = _decode_mime_header(header_msg.get("From"))
-                message_id_hdr = _decode_mime_header(header_msg.get("Message-ID")) or f"imap-{cur_msg_id.decode()}"
-                date_hdr = _decode_mime_header(header_msg.get("Date"))
+                raw_email_bytes = f_data[0][1] if isinstance(f_data[0], tuple) else b""
+                full_msg = email.message_from_bytes(raw_email_bytes)
 
-                combined_meta = f"{sender} {subject}".lower()
-                if any(kw in combined_meta for kw in target_keywords):
-                    candidate_msg_ids.append((cur_msg_id, subject, sender, message_id_hdr, date_hdr, combined_meta))
+                body_texts = []
+                pdf_parts = []
+                filenames = []
 
-        for msg_id, subject, sender, message_id_hdr, date_hdr, combined_meta in candidate_msg_ids:
-            # Fetch full message only for candidates
-            f_status, f_data = mail.fetch(msg_id, "(BODY.PEEK[])")
-            if f_status != "OK" or not f_data or not f_data[0]:
-                continue
+                for part in full_msg.walk():
+                    content_type = (part.get_content_type() or "").lower().strip()
+                    content_disp = str(part.get("Content-Disposition") or "").lower()
+                    filename = _decode_mime_header(part.get_filename())
+                    if filename:
+                        filenames.append(filename.lower())
 
-            raw_email_bytes = f_data[0][1] if isinstance(f_data[0], tuple) else b""
-            full_msg = email.message_from_bytes(raw_email_bytes)
+                    if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
+                        payload = part.get_payload(decode=True)
+                        if payload:
+                            pdf_parts.append(payload)
+                    elif content_type == "text/plain" and "attachment" not in content_disp:
+                        payload = part.get_payload(decode=True)
+                        if payload:
+                            charset = part.get_content_charset() or "utf-8"
+                            body_texts.append(payload.decode(charset, errors="replace"))
+                    elif content_type == "text/html" and "attachment" not in content_disp:
+                        payload = part.get_payload(decode=True)
+                        if payload:
+                            charset = part.get_content_charset() or "utf-8"
+                            html_str = payload.decode(charset, errors="replace")
+                            body_texts.append(strip_html_tags(html_str))
 
-            body_texts = []
-            pdf_parts = []
-            filenames = []
+                body_combined = "\n\n".join(body_texts)
+                quick_check_str = f"{combined_meta} {' '.join(filenames)} {body_combined.lower()}"
+                if not any(p in quick_check_str for p in ("cpfl", "alares", "paulista de forca e luz", "paulista de força e luz")):
+                    continue
 
-            for part in full_msg.walk():
-                content_type = (part.get_content_type() or "").lower().strip()
-                content_disp = str(part.get("Content-Disposition") or "").lower()
-                filename = _decode_mime_header(part.get_filename())
-                if filename:
-                    filenames.append(filename.lower())
+                pdf_texts = []
+                for payload in pdf_parts:
+                    pdf_text = extract_text_from_pdf(payload)
+                    if not pdf_text.strip():
+                        pdf_text = extract_text_from_image(payload)
+                    if pdf_text.strip():
+                        pdf_texts.append(pdf_text)
 
-                if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
-                    payload = part.get_payload(decode=True)
-                    if payload:
-                        pdf_parts.append(payload)
-                elif content_type == "text/plain" and "attachment" not in content_disp:
-                    payload = part.get_payload(decode=True)
-                    if payload:
-                        charset = part.get_content_charset() or "utf-8"
-                        body_texts.append(payload.decode(charset, errors="replace"))
-                elif content_type == "text/html" and "attachment" not in content_disp:
-                    payload = part.get_payload(decode=True)
-                    if payload:
-                        charset = part.get_content_charset() or "utf-8"
-                        html_str = payload.decode(charset, errors="replace")
-                        body_texts.append(strip_html_tags(html_str))
-
-            body_combined = "\n\n".join(body_texts)
-            quick_check_str = f"{combined_meta} {' '.join(filenames)} {body_combined.lower()}"
-            if not any(p in quick_check_str for p in ("cpfl", "alares", "paulista de forca e luz", "paulista de força e luz")):
-                continue
-
-            pdf_texts = []
-            for payload in pdf_parts:
-                pdf_text = extract_text_from_pdf(payload)
-                if not pdf_text.strip():
-                    pdf_text = extract_text_from_image(payload)
-                if pdf_text.strip():
-                    pdf_texts.append(pdf_text)
-
-            combined_text = "\n\n".join(body_texts + pdf_texts)
-            extracted = extract_invoice_data(combined_text, subject=subject, sender=sender)
-            if extracted.get("success") and extracted.get("provider") in ("CPFL", "Alares"):
-                extracted["external_message_id"] = message_id_hdr
-                extracted["email_date"] = date_hdr
-                extracted["has_pdf"] = len(pdf_texts) > 0
-                invoices.append(extracted)
+                combined_text = "\n\n".join(body_texts + pdf_texts)
+                extracted = extract_invoice_data(combined_text, subject=subject, sender=sender)
+                if extracted.get("success") and extracted.get("provider") in ("CPFL", "Alares"):
+                    extracted["external_message_id"] = message_id_hdr
+                    extracted["email_date"] = date_hdr
+                    extracted["has_pdf"] = len(pdf_texts) > 0
+                    invoices.append(extracted)
 
         return {
             "success": True,

@@ -153,7 +153,7 @@ class ReceiptExtractorService
         string $host = 'outlook.office365.com',
         int $port = 993,
         string $folder = 'INBOX',
-        int $maxMessages = 400
+        int $maxMessages = 250
     ): array {
         try {
             $response = $this->postToExtractor('/fetch-imap-invoices', [
@@ -208,8 +208,11 @@ class ReceiptExtractorService
         foreach ($candidates as $baseUrl) {
             $url = rtrim($baseUrl, '/').'/'.ltrim($endpointPath, '/');
             try {
-                return Http::timeout($timeout)->post($url, $payload);
+                return Http::connectTimeout(3)->timeout($timeout)->post($url, $payload);
             } catch (ConnectionException $e) {
+                if (str_contains($e->getMessage(), 'cURL error 28')) {
+                    throw $e;
+                }
                 $lastException = $e;
 
                 continue;
