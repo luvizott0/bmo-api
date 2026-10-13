@@ -214,6 +214,8 @@ class EmailInvoiceSyncService
      */
     public function syncFromEmail(bool $notifyWhatsApp = true, ?int $workspaceId = null): array
     {
+        @set_time_limit(120);
+
         $emailAddress = (string) config('services.invoice_email.address');
         $password = config('services.invoice_email.password');
         $host = (string) config('services.invoice_email.host', 'outlook.office365.com');

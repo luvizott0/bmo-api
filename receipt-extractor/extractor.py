@@ -517,21 +517,20 @@ def fetch_imap_invoices(
             full_msg = email.message_from_bytes(raw_email_bytes)
 
             body_texts = []
-            pdf_texts = []
+            pdf_parts = []
+            filenames = []
 
             for part in full_msg.walk():
-                content_type = (part.get_content_type() or "").lower()
+                content_type = (part.get_content_type() or "").lower().strip()
                 content_disp = str(part.get("Content-Disposition") or "").lower()
                 filename = _decode_mime_header(part.get_filename())
+                if filename:
+                    filenames.append(filename.lower())
 
-                if content_type == " application/pdf" or content_type == "application/pdf" or filename.lower().endswith(".pdf"):
+                if content_type == "application/pdf" or filename.lower().endswith(".pdf"):
                     payload = part.get_payload(decode=True)
                     if payload:
-                        pdf_text = extract_text_from_pdf(payload)
-                        if not pdf_text.strip():
-                            pdf_text = extract_text_from_image(payload)
-                        if pdf_text.strip():
-                            pdf_texts.append(pdf_text)
+                        pdf_parts.append(payload)
                 elif content_type == "text/plain" and "attachment" not in content_disp:
                     payload = part.get_payload(decode=True)
                     if payload:
@@ -544,10 +543,20 @@ def fetch_imap_invoices(
                         html_str = payload.decode(charset, errors="replace")
                         body_texts.append(strip_html_tags(html_str))
 
-            combined_text = "\n\n".join(body_texts + pdf_texts)
-            if not any(p in f"{combined_meta} {combined_text.lower()}" for p in ("cpfl", "alares")):
+            body_combined = "\n\n".join(body_texts)
+            quick_check_str = f"{combined_meta} {' '.join(filenames)} {body_combined.lower()}"
+            if not any(p in quick_check_str for p in ("cpfl", "alares", "paulista de forca e luz", "paulista de força e luz")):
                 continue
 
+            pdf_texts = []
+            for payload in pdf_parts:
+                pdf_text = extract_text_from_pdf(payload)
+                if not pdf_text.strip():
+                    pdf_text = extract_text_from_image(payload)
+                if pdf_text.strip():
+                    pdf_texts.append(pdf_text)
+
+            combined_text = "\n\n".join(body_texts + pdf_texts)
             extracted = extract_invoice_data(combined_text, subject=subject, sender=sender)
             if extracted.get("success") and extracted.get("provider") in ("CPFL", "Alares"):
                 extracted["external_message_id"] = message_id_hdr

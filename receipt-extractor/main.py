@@ -46,7 +46,7 @@ class ImapFetchRequest(BaseModel):
     host: str = "outlook.office365.com"
     port: int = 993
     folder: str = "INBOX"
-    max_messages: int = 400
+    max_messages: int = 250
 
 
 @app.get("/health")
@@ -55,7 +55,7 @@ def health():
 
 
 @app.post("/extract")
-async def extract_from_base64(req: Base64ExtractRequest):
+def extract_from_base64(req: Base64ExtractRequest):
     try:
         raw_b64 = req.base64
         # Remove data:image/...;base64, prefix if present
@@ -104,7 +104,7 @@ async def extract_from_file(file: UploadFile = File(...)):
 
 
 @app.post("/extract-invoice")
-async def extract_invoice_endpoint(req: InvoiceExtractRequest):
+def extract_invoice_endpoint(req: InvoiceExtractRequest):
     parts = []
     if req.text:
         parts.append(req.text)
@@ -129,7 +129,7 @@ async def extract_invoice_endpoint(req: InvoiceExtractRequest):
 
 
 @app.post("/fetch-imap-invoices")
-async def fetch_imap_invoices_endpoint(req: ImapFetchRequest):
+def fetch_imap_invoices_endpoint(req: ImapFetchRequest):
     return fetch_imap_invoices(
         email_address=req.email_address,
         password=req.password,
