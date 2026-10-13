@@ -45,8 +45,8 @@ return [
     ],
 
     'receipt_extractor' => [
-        'url' => env('RECEIPT_EXTRACTOR_URL', 'http://127.0.0.1:8084/extract'),
-        'base_url' => env('RECEIPT_EXTRACTOR_BASE_URL', 'http://127.0.0.1:8084'),
+        'url' => env('RECEIPT_EXTRACTOR_URL', 'http://bmo-receipt-extractor:5000/extract'),
+        'base_url' => env('RECEIPT_EXTRACTOR_BASE_URL'),
     ],
 
     'invoice_email' => [

@@ -24,8 +24,26 @@ class EmailInvoiceSyncService
      *
      * @return array<string, mixed>
      */
-    public function startOutlookDeviceAuth(): array
+    public function startOutlookDeviceAuth(bool $forceNew = false): array
     {
+        if (! $forceNew) {
+            $existingDeviceCode = IntegrationSetting::getValue('outlook_device_code');
+            $existingUserCode = IntegrationSetting::getValue('outlook_user_code');
+            $expiresAt = (int) IntegrationSetting::getValue('outlook_device_code_expires_at', '0');
+
+            if ($existingDeviceCode && $existingUserCode && $expiresAt > now()->timestamp) {
+                return [
+                    'success' => true,
+                    'user_code' => $existingUserCode,
+                    'verification_uri' => 'https://microsoft.com/devicelogin',
+                    'expires_in' => $expiresAt - now()->timestamp,
+                    'interval' => 5,
+                    'device_code' => $existingDeviceCode,
+                    'reused' => true,
+                ];
+            }
+        }
+
         $clientId = config('services.invoice_email.oauth_client_id', '9e5f94bc-e8a4-4e73-b8be-63364c29d753');
 
         $response = Http::asForm()->post('https://login.microsoftonline.com/common/oauth2/v2.0/devicecode', [
@@ -41,8 +59,12 @@ class EmailInvoiceSyncService
         }
 
         $data = $response->json();
+        $expiresIn = (int) ($data['expires_in'] ?? 900);
+
         if (! empty($data['device_code'])) {
             IntegrationSetting::setValue('outlook_device_code', $data['device_code']);
+            IntegrationSetting::setValue('outlook_user_code', $data['user_code'] ?? '');
+            IntegrationSetting::setValue('outlook_device_code_expires_at', (string) (now()->timestamp + $expiresIn - 60));
         }
 
         return [
@@ -50,9 +72,10 @@ class EmailInvoiceSyncService
             'user_code' => $data['user_code'] ?? null,
             'verification_uri' => $data['verification_uri'] ?? 'https://microsoft.com/devicelogin',
             'message' => $data['message'] ?? null,
-            'expires_in' => $data['expires_in'] ?? 900,
+            'expires_in' => $expiresIn,
             'interval' => $data['interval'] ?? 5,
             'device_code' => $data['device_code'] ?? null,
+            'reused' => false,
         ];
     }
 

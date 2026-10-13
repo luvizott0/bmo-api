@@ -2,6 +2,8 @@
 
 namespace App\Services;
 
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -92,20 +94,17 @@ class ReceiptExtractorService
         string $subject = '',
         string $sender = ''
     ): array {
-        $baseUrl = rtrim($this->resolveBaseUrl(), '/');
-        $url = "{$baseUrl}/extract-invoice";
-
         try {
-            $response = Http::timeout(30)->post($url, [
+            $response = $this->postToExtractor('/extract-invoice', [
                 'base64' => $base64,
                 'mimetype' => $mimetype,
                 'filename' => $filename,
                 'text' => $text,
                 'subject' => $subject,
                 'sender' => $sender,
-            ]);
+            ], 30);
 
-            if ($response->successful()) {
+            if ($response && $response->successful()) {
                 $data = $response->json();
 
                 return [
@@ -122,7 +121,6 @@ class ReceiptExtractorService
         } catch (\Throwable $e) {
             Log::error('ReceiptExtractorService extractInvoice failed', [
                 'error' => $e->getMessage(),
-                'url' => $url,
             ]);
         }
 
@@ -157,11 +155,8 @@ class ReceiptExtractorService
         string $folder = 'INBOX',
         int $maxMessages = 80
     ): array {
-        $baseUrl = rtrim($this->resolveBaseUrl(), '/');
-        $url = "{$baseUrl}/fetch-imap-invoices";
-
         try {
-            $response = Http::timeout(60)->post($url, [
+            $response = $this->postToExtractor('/fetch-imap-invoices', [
                 'email_address' => $emailAddress,
                 'password' => $password,
                 'access_token' => $accessToken,
@@ -169,9 +164,9 @@ class ReceiptExtractorService
                 'port' => $port,
                 'folder' => $folder,
                 'max_messages' => $maxMessages,
-            ]);
+            ], 60);
 
-            if ($response->successful()) {
+            if ($response && $response->successful()) {
                 $data = $response->json();
 
                 return [
@@ -184,13 +179,12 @@ class ReceiptExtractorService
 
             return [
                 'success' => false,
-                'error' => 'Extractor HTTP status '.$response->status(),
+                'error' => $response ? 'Extractor HTTP status '.$response->status() : 'No response from extractor',
                 'invoices' => [],
             ];
         } catch (\Throwable $e) {
             Log::error('ReceiptExtractorService fetchImapInvoices failed', [
                 'error' => $e->getMessage(),
-                'url' => $url,
             ]);
 
             return [
@@ -201,19 +195,65 @@ class ReceiptExtractorService
         }
     }
 
+    /**
+     * Post to the Python extractor service trying the configured URL first, then Docker/LAN fallbacks on connection error.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    private function postToExtractor(string $endpointPath, array $payload, int $timeout = 30): ?Response
+    {
+        $candidates = $this->getCandidateBaseUrls();
+        $lastException = null;
+
+        foreach ($candidates as $baseUrl) {
+            $url = rtrim($baseUrl, '/').'/'.ltrim($endpointPath, '/');
+            try {
+                return Http::timeout($timeout)->post($url, $payload);
+            } catch (ConnectionException $e) {
+                $lastException = $e;
+
+                continue;
+            }
+        }
+
+        if ($lastException) {
+            throw $lastException;
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function getCandidateBaseUrls(): array
+    {
+        $primary = $this->resolveBaseUrl();
+
+        $fallbacks = [
+            $primary,
+            'http://bmo-receipt-extractor:5000',
+            'http://receipt-extractor:5000',
+            'http://192.168.5.254:8084',
+            'http://127.0.0.1:8084',
+        ];
+
+        return array_values(array_unique(array_filter($fallbacks)));
+    }
+
     private function resolveBaseUrl(): string
     {
         if ($this->extractorUrl) {
-            return preg_replace('#/extract$#', '', $this->extractorUrl);
+            return (string) preg_replace('#/extract$#', '', $this->extractorUrl);
         }
 
         $configuredBase = config('services.receipt_extractor.base_url');
         if ($configuredBase) {
-            return $configuredBase;
+            return (string) $configuredBase;
         }
 
-        $extractUrl = (string) config('services.receipt_extractor.url', 'http://127.0.0.1:8084/extract');
+        $extractUrl = (string) config('services.receipt_extractor.url', 'http://bmo-receipt-extractor:5000/extract');
 
-        return preg_replace('#/extract$#', '', $extractUrl);
+        return (string) preg_replace('#/extract$#', '', $extractUrl);
     }
 }
