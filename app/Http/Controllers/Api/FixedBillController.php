@@ -13,6 +13,7 @@ use App\Http\Resources\TransactionResource;
 use App\Models\BankAccount;
 use App\Models\CreditCard;
 use App\Models\FixedBill;
+use App\Services\EmailInvoiceSyncService;
 use App\Services\TransactionService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -214,7 +215,13 @@ class FixedBillController extends Controller
             ->first();
 
         if ($transaction) {
-            $this->transactionService->delete($transaction);
+            if ($transaction->external_message_id || $transaction->pix_code || $transaction->barcode) {
+                $this->transactionService->update($transaction, [
+                    'status' => TransactionStatus::Pending,
+                ]);
+            } else {
+                $this->transactionService->delete($transaction);
+            }
         }
 
         $fixedBill->load([
@@ -226,6 +233,26 @@ class FixedBillController extends Controller
         return response()->json([
             'message' => 'Fixed bill marked as unpaid.',
             'bill' => new FixedBillResource($fixedBill),
+        ]);
+    }
+
+    /**
+     * Trigger email invoice synchronization for CPFL and Alares.
+     */
+    public function syncEmails(EmailInvoiceSyncService $syncService): JsonResponse
+    {
+        $result = $syncService->syncFromEmail(notifyWhatsApp: true);
+
+        if (! $result['success']) {
+            return response()->json([
+                'message' => $result['error'] ?? 'Falha ao sincronizar e-mails.',
+                'result' => $result,
+            ], 422);
+        }
+
+        return response()->json([
+            'message' => "{$result['synced']} fatura(s) sincronizada(s) com sucesso.",
+            'result' => $result,
         ]);
     }
 

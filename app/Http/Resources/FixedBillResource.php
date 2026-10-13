@@ -19,17 +19,22 @@ class FixedBillResource extends JsonResource
         $currentMonth = $request->input('reference_month', now()->format('Y-m'));
 
         $currentPayment = null;
+        $currentInvoice = null;
         if ($this->relationLoaded('transactions')) {
-            $currentPayment = $this->transactions
+            $monthTransactions = $this->transactions
                 ->filter(function ($t) use ($currentMonth) {
                     $dateStr = $t->occurred_at instanceof CarbonInterface
                         ? $t->occurred_at->format('Y-m')
                         : substr((string) $t->occurred_at, 0, 7);
 
-                    return $dateStr === $currentMonth && ($t->status === TransactionStatus::Paid || $t->status === 'paid');
+                    return $dateStr === $currentMonth;
                 })
-                ->sortByDesc('occurred_at')
-                ->first();
+                ->sortByDesc('occurred_at');
+
+            $currentPayment = $monthTransactions
+                ->first(fn ($t) => $t->status === TransactionStatus::Paid || $t->status === 'paid');
+
+            $currentInvoice = $monthTransactions->first();
         }
 
         $payments = [];
@@ -45,6 +50,8 @@ class FixedBillResource extends JsonResource
                     'status' => $t->status instanceof \BackedEnum ? $t->status->value : (string) $t->status,
                     'bank_account_id' => $t->bank_account_id,
                     'credit_card_id' => $t->credit_card_id,
+                    'barcode' => $t->barcode,
+                    'pix_code' => $t->pix_code,
                 ])
                 ->values()
                 ->all();
@@ -57,6 +64,7 @@ class FixedBillResource extends JsonResource
             'color_hex' => $this->color_hex ?? '#3b82f6',
             'type' => $this->type?->value ?? $this->type,
             'estimated_amount' => (float) $this->estimated_amount,
+            'current_month_amount' => $currentInvoice ? (float) $currentInvoice->amount : (float) $this->estimated_amount,
             'due_day' => $this->due_day,
             'category_id' => $this->category_id,
             'preferred_bank_account_id' => $this->preferred_bank_account_id,
@@ -74,6 +82,16 @@ class FixedBillResource extends JsonResource
                 'status' => $currentPayment->status instanceof \BackedEnum ? $currentPayment->status->value : (string) $currentPayment->status,
                 'bank_account_id' => $currentPayment->bank_account_id,
                 'credit_card_id' => $currentPayment->credit_card_id,
+                'barcode' => $currentPayment->barcode,
+                'pix_code' => $currentPayment->pix_code,
+            ] : null,
+            'current_invoice' => $currentInvoice ? [
+                'id' => $currentInvoice->id,
+                'amount' => (float) $currentInvoice->amount,
+                'occurred_at' => $currentInvoice->occurred_at instanceof CarbonInterface ? $currentInvoice->occurred_at->toDateString() : (string) $currentInvoice->occurred_at,
+                'status' => $currentInvoice->status instanceof \BackedEnum ? $currentInvoice->status->value : (string) $currentInvoice->status,
+                'barcode' => $currentInvoice->barcode,
+                'pix_code' => $currentInvoice->pix_code,
             ] : null,
             'payments' => $payments,
             'created_at' => $this->created_at?->toISOString(),

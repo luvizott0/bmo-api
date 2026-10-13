@@ -10,3 +10,4 @@ Artisan::command('inspire', function () {
 
 Schedule::command('financial:process-subscriptions')->daily();
 Schedule::command('financial:send-subscription-reminders')->dailyAt('09:00');
+Schedule::command('bills:sync-emails')->hourly();

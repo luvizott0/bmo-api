@@ -69,4 +69,151 @@ class ReceiptExtractorService
             'recipient_name' => null,
         ];
     }
+
+    /**
+     * Extract utility bill / invoice details from base64 PDF/image and/or email text.
+     *
+     * @return array{
+     *     success: bool,
+     *     provider: ?string,
+     *     bill_type: ?string,
+     *     amount: ?float,
+     *     due_date: ?string,
+     *     reference_month: ?string,
+     *     pix_code: ?string,
+     *     barcode: ?string
+     * }
+     */
+    public function extractInvoice(
+        ?string $base64 = null,
+        string $mimetype = 'application/pdf',
+        ?string $filename = null,
+        string $text = '',
+        string $subject = '',
+        string $sender = ''
+    ): array {
+        $baseUrl = rtrim($this->resolveBaseUrl(), '/');
+        $url = "{$baseUrl}/extract-invoice";
+
+        try {
+            $response = Http::timeout(30)->post($url, [
+                'base64' => $base64,
+                'mimetype' => $mimetype,
+                'filename' => $filename,
+                'text' => $text,
+                'subject' => $subject,
+                'sender' => $sender,
+            ]);
+
+            if ($response->successful()) {
+                $data = $response->json();
+
+                return [
+                    'success' => (bool) ($data['success'] ?? false),
+                    'provider' => $data['provider'] ?? null,
+                    'bill_type' => $data['bill_type'] ?? null,
+                    'amount' => isset($data['amount']) ? (float) $data['amount'] : null,
+                    'due_date' => $data['due_date'] ?? null,
+                    'reference_month' => $data['reference_month'] ?? null,
+                    'pix_code' => $data['pix_code'] ?? null,
+                    'barcode' => $data['barcode'] ?? null,
+                ];
+            }
+        } catch (\Throwable $e) {
+            Log::error('ReceiptExtractorService extractInvoice failed', [
+                'error' => $e->getMessage(),
+                'url' => $url,
+            ]);
+        }
+
+        return [
+            'success' => false,
+            'provider' => null,
+            'bill_type' => null,
+            'amount' => null,
+            'due_date' => null,
+            'reference_month' => null,
+            'pix_code' => null,
+            'barcode' => null,
+        ];
+    }
+
+    /**
+     * Connect to IMAP via Python extractor service and retrieve recent CPFL/Alares invoices.
+     *
+     * @return array{
+     *     success: bool,
+     *     error?: string,
+     *     scanned?: int,
+     *     invoices: array<int, array<string, mixed>>
+     * }
+     */
+    public function fetchImapInvoices(
+        string $emailAddress,
+        ?string $password = null,
+        ?string $accessToken = null,
+        string $host = 'outlook.office365.com',
+        int $port = 993,
+        string $folder = 'INBOX',
+        int $maxMessages = 80
+    ): array {
+        $baseUrl = rtrim($this->resolveBaseUrl(), '/');
+        $url = "{$baseUrl}/fetch-imap-invoices";
+
+        try {
+            $response = Http::timeout(60)->post($url, [
+                'email_address' => $emailAddress,
+                'password' => $password,
+                'access_token' => $accessToken,
+                'host' => $host,
+                'port' => $port,
+                'folder' => $folder,
+                'max_messages' => $maxMessages,
+            ]);
+
+            if ($response->successful()) {
+                $data = $response->json();
+
+                return [
+                    'success' => (bool) ($data['success'] ?? false),
+                    'error' => $data['error'] ?? null,
+                    'scanned' => (int) ($data['scanned'] ?? 0),
+                    'invoices' => is_array($data['invoices'] ?? null) ? $data['invoices'] : [],
+                ];
+            }
+
+            return [
+                'success' => false,
+                'error' => 'Extractor HTTP status '.$response->status(),
+                'invoices' => [],
+            ];
+        } catch (\Throwable $e) {
+            Log::error('ReceiptExtractorService fetchImapInvoices failed', [
+                'error' => $e->getMessage(),
+                'url' => $url,
+            ]);
+
+            return [
+                'success' => false,
+                'error' => $e->getMessage(),
+                'invoices' => [],
+            ];
+        }
+    }
+
+    private function resolveBaseUrl(): string
+    {
+        if ($this->extractorUrl) {
+            return preg_replace('#/extract$#', '', $this->extractorUrl);
+        }
+
+        $configuredBase = config('services.receipt_extractor.base_url');
+        if ($configuredBase) {
+            return $configuredBase;
+        }
+
+        $extractUrl = (string) config('services.receipt_extractor.url', 'http://127.0.0.1:8084/extract');
+
+        return preg_replace('#/extract$#', '', $extractUrl);
+    }
 }

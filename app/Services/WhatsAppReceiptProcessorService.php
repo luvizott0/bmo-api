@@ -3,9 +3,14 @@
 namespace App\Services;
 
 use App\Enums\SubscriptionPaymentStatus;
+use App\Enums\TransactionStatus;
+use App\Enums\TransactionType;
+use App\Models\FixedBill;
 use App\Models\Friend;
 use App\Models\SubscriptionMember;
 use App\Models\SubscriptionPayment;
+use App\Models\Transaction;
+use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 
@@ -14,7 +19,8 @@ class WhatsAppReceiptProcessorService
     public function __construct(
         private readonly ReceiptExtractorService $extractorService,
         private readonly WhatsAppNotificationService $notificationService,
-        private readonly SubscriptionService $subscriptionService
+        private readonly SubscriptionService $subscriptionService,
+        private readonly ?EmailInvoiceSyncService $emailInvoiceSyncService = null
     ) {}
 
     /**
@@ -79,6 +85,11 @@ class WhatsAppReceiptProcessorService
         $isDocument = $mediaType === 'documentMessage' || isset($messageObj['documentMessage']) || isset($messageObj['documentWithCaptionMessage']);
 
         if (! $isImage && ! $isDocument) {
+            $textContent = $this->extractTextMessage($messageObj);
+            if ($textContent !== '') {
+                $this->handleTextCommand($remoteJid, $textContent, $messageId);
+            }
+
             return;
         }
 
@@ -112,11 +123,20 @@ class WhatsAppReceiptProcessorService
             return;
         }
 
+        $caption = $this->extractCaption($messageObj);
+        $financialGroupJid = config('services.evolution.financial_group_jid');
+
+        // If sent in the financial group (or caption mentions fatura/boleto), check if it's a utility bill invoice PDF first
+        if ($remoteJid === $financialGroupJid || preg_match('/\b(fatura|boleto|cpfl|alares)\b/iu', $caption.' '.($filename ?? ''))) {
+            if ($this->tryProcessUtilityInvoiceMedia($remoteJid, $base64, $mimetype, $filename, $caption, $messageId)) {
+                return;
+            }
+        }
+
         // Extract receipt data via Python extractor
         $extracted = $this->extractorService->extractFromBase64($base64, $mimetype, $filename);
 
         if (! ($extracted['success'] ?? false) || empty($extracted['amount'])) {
-            $caption = $this->extractCaption($messageObj);
             $hasReceiptKeyword = str_contains(strtolower($caption), 'comprovante') || str_contains(strtolower($caption), 'pix');
 
             if ($hasReceiptKeyword || ! str_contains($remoteJid, '@g.us')) {
@@ -134,6 +154,13 @@ class WhatsAppReceiptProcessorService
         $transactionId = $extracted['transaction_id'] ?? null;
         $paymentDate = $extracted['payment_date'] ?? now()->toDateString();
         $referenceMonth = substr($paymentDate, 0, 7);
+
+        // If in the financial group, check if this receipt pays a pending FixedBill of the house
+        if ($remoteJid === $financialGroupJid) {
+            if ($this->tryProcessFixedBillPaymentReceipt($remoteJid, $amount, $paymentDate, $extracted, $messageId)) {
+                return;
+            }
+        }
 
         // Anti-duplicity check via transaction ID
         if ($transactionId) {
@@ -695,5 +722,340 @@ class WhatsAppReceiptProcessorService
         return $messageObj['imageMessage']['caption']
             ?? ($messageObj['documentWithCaptionMessage']['caption']
             ?? ($messageObj['documentMessage']['caption'] ?? ''));
+    }
+
+    /**
+     * Extract plain text from a WhatsApp conversation or extendedTextMessage.
+     *
+     * @param  array<string, mixed>  $messageObj
+     */
+    private function extractTextMessage(array $messageObj): string
+    {
+        $text = $messageObj['conversation']
+            ?? ($messageObj['extendedTextMessage']['text'] ?? '');
+
+        return trim((string) $text);
+    }
+
+    /**
+     * Handle interactive text commands in WhatsApp (such as listing pending bills or syncing emails).
+     */
+    private function handleTextCommand(string $remoteJid, string $text, ?string $messageId = null): void
+    {
+        $normalized = mb_strtolower(trim($text));
+
+        // 1. Command: List bills to pay ("me mostre as contas a pagar", "contas a pagar", "/contas", etc.)
+        if (
+            preg_match('/\b(contas?\s+a\s+pagar|me\s+mostre\s+as\s+contas|mostrar\s+contas|contas?\s+pendentes?|contas?\s+da\s+casa|contas?\s+do\s+m[eê]s|quais\s+as\s+contas|listar?\s+contas)\b/iu', $normalized)
+            || preg_match('/^\/?(contas|boletos|faturas|pagar)$/iu', $normalized)
+        ) {
+            $this->sendPendingBillsList($remoteJid, $messageId);
+
+            return;
+        }
+
+        // 2. Command: Sync emails on demand ("atualizar contas", "checar emails", "/emails", "/sincronizar")
+        if (
+            preg_match('/\b(sincronizar\s+contas|atualizar\s+contas|checar\s+e?-?mails?|verificar\s+e?-?mails?|buscar\s+contas\s+no\s+e?-?mail)\b/iu', $normalized)
+            || preg_match('/^\/?(sync|emails|sincronizar)$/iu', $normalized)
+        ) {
+            $this->handleEmailSyncCommand($remoteJid, $messageId);
+
+            return;
+        }
+
+        // 3. Command: Help ("/ajuda", "/comandos", "bmo ajuda")
+        if (preg_match('/^(\/ajuda|\/comandos|bmo\s+ajuda)$/iu', $normalized)) {
+            $helpText = implode("\n", [
+                '🤖 *Comandos Financeiros do BMO:*',
+                '',
+                '• *"me mostre as contas a pagar"* (ou */contas*) — Lista todas as contas da casa do mês atual, valores e envia o Pix Copia e Cola / Código de Barras.',
+                '• *"atualizar contas"* (ou */emails*) — Verifica a caixa de entrada do Outlook atrás de novas faturas da CPFL e Alares.',
+                '• *Enviar PDF da Fatura* — Atualiza automaticamente o valor da conta do mês e extrai o Pix/Código de Barras.',
+                '• *Enviar Comprovante de Pagamento* — Dá baixa automática na conta correspondente.',
+            ]);
+            $this->notificationService->sendText($remoteJid, $helpText, $messageId);
+        }
+    }
+
+    /**
+     * Format and send the list of current month's FixedBills and their Pix/Barcodes.
+     */
+    public function sendPendingBillsList(string $remoteJid, ?string $messageId = null): void
+    {
+        $now = Carbon::now();
+        $startOfMonth = $now->copy()->startOfMonth();
+        $endOfMonth = $now->copy()->endOfMonth();
+        $monthLabel = $now->format('m/Y');
+
+        $bills = FixedBill::where('is_active', true)
+            ->with(['transactions' => function ($query) use ($startOfMonth, $endOfMonth) {
+                $query->whereBetween('occurred_at', [$startOfMonth->toDateString(), $endOfMonth->toDateString()])
+                    ->orderByDesc('occurred_at');
+            }])
+            ->orderBy('due_day')
+            ->get();
+
+        if ($bills->isEmpty()) {
+            $this->notificationService->sendText(
+                $remoteJid,
+                '📋 Nenhuma conta fixa ativa cadastrada no BMO no momento.',
+                $messageId
+            );
+
+            return;
+        }
+
+        $pendingLines = [];
+        $paidLines = [];
+        $codesToSend = [];
+        $totalPending = 0.0;
+        $idx = 1;
+
+        foreach ($bills as $bill) {
+            /** @var Transaction|null $paidTx */
+            $paidTx = $bill->transactions->first(fn (Transaction $t) => $t->status === TransactionStatus::Paid);
+            /** @var Transaction|null $invoiceTx */
+            $invoiceTx = $paidTx ?? $bill->transactions->first();
+
+            $amount = $invoiceTx ? (float) $invoiceTx->amount : (float) $bill->estimated_amount;
+            $formattedAmount = number_format($amount, 2, ',', '.');
+
+            $dueDateStr = $invoiceTx
+                ? $invoiceTx->occurred_at->format('d/m/Y')
+                : sprintf('%02d/%s', min((int) $bill->due_day, $endOfMonth->day), $monthLabel);
+
+            if ($paidTx) {
+                $paidLines[] = "✅ *{$bill->name}* — R$ {$formattedAmount} _(Pago em {$paidTx->occurred_at->format('d/m')})_";
+            } else {
+                $totalPending += $amount;
+                $codeBadge = '';
+                if ($invoiceTx?->pix_code) {
+                    $codeBadge = ' 💠 _Pix disponível_';
+                    $codesToSend[] = [
+                        'bill_name' => $bill->name,
+                        'amount' => $formattedAmount,
+                        'type' => 'Pix Copia e Cola',
+                        'code' => $invoiceTx->pix_code,
+                    ];
+                } elseif ($invoiceTx?->barcode) {
+                    $codeBadge = ' 🔢 _Cód. Barras disponível_';
+                    $codesToSend[] = [
+                        'bill_name' => $bill->name,
+                        'amount' => $formattedAmount,
+                        'type' => 'Código de Barras',
+                        'code' => $invoiceTx->barcode,
+                    ];
+                } elseif (! $invoiceTx) {
+                    $codeBadge = ' _(Valor estimado)_';
+                }
+
+                $pendingLines[] = "{$idx}. *{$bill->name}* — R$ {$formattedAmount} (Venc: {$dueDateStr}){$codeBadge}";
+                $idx++;
+            }
+        }
+
+        $messageParts = [
+            "📋 *Contas da Casa — {$monthLabel}*",
+            '',
+        ];
+
+        if (! empty($pendingLines)) {
+            $messageParts[] = '⏳ *CONTAS A PAGAR:*';
+            foreach ($pendingLines as $line) {
+                $messageParts[] = $line;
+            }
+            $formattedTotal = number_format($totalPending, 2, ',', '.');
+            $messageParts[] = '';
+            $messageParts[] = "💰 *Total pendente:* R$ {$formattedTotal}";
+        } else {
+            $messageParts[] = '🎉 *Todas as contas deste mês já estão pagas!*';
+        }
+
+        if (! empty($paidLines)) {
+            $messageParts[] = '';
+            $messageParts[] = '✔️ *JÁ PAGAS ESTE MÊS:*';
+            foreach ($paidLines as $line) {
+                $messageParts[] = $line;
+            }
+        }
+
+        $this->notificationService->sendText($remoteJid, implode("\n", $messageParts), $messageId);
+
+        // Send individual copy-paste blocks for each pending bill that has Pix or Barcode
+        foreach ($codesToSend as $item) {
+            $this->notificationService->sendText(
+                $remoteJid,
+                "👇 *{$item['type']} — {$item['bill_name']} (R$ {$item['amount']}):*"
+            );
+            $this->notificationService->sendText($remoteJid, $item['code']);
+        }
+    }
+
+    /**
+     * Trigger email synchronization when requested via WhatsApp.
+     */
+    private function handleEmailSyncCommand(string $remoteJid, ?string $messageId = null): void
+    {
+        $syncService = $this->resolveEmailSyncService();
+        $result = $syncService->syncFromEmail(notifyWhatsApp: true);
+
+        if (! $result['success']) {
+            $this->notificationService->sendText(
+                $remoteJid,
+                "⚠️ Não foi possível sincronizar a caixa de e-mail agora: {$result['error']}",
+                $messageId
+            );
+
+            return;
+        }
+
+        if ($result['synced'] === 0) {
+            $this->notificationService->sendText(
+                $remoteJid,
+                "📬 Verifiquei os últimos {$result['scanned']} e-mails da caixa de entrada e nenhuma nova fatura pendente da CPFL ou Alares foi encontrada.",
+                $messageId
+            );
+        } else {
+            $this->notificationService->sendText(
+                $remoteJid,
+                "✅ Sincronização concluída! {$result['synced']} fatura(s) atualizada(s) a partir do e-mail.",
+                $messageId
+            );
+        }
+    }
+
+    /**
+     * Check if a media file sent in the financial group is an invoice (fatura CPFL/Alares) and sync it.
+     */
+    private function tryProcessUtilityInvoiceMedia(
+        string $remoteJid,
+        string $base64,
+        string $mimetype,
+        ?string $filename,
+        string $caption,
+        ?string $messageId
+    ): bool {
+        $invoiceData = $this->extractorService->extractInvoice(
+            base64: $base64,
+            mimetype: $mimetype,
+            filename: $filename,
+            text: $caption
+        );
+
+        if (! ($invoiceData['success'] ?? false) || empty($invoiceData['amount']) || empty($invoiceData['provider'])) {
+            return false;
+        }
+
+        $hasInvoiceCode = ! empty($invoiceData['pix_code']) || ! empty($invoiceData['barcode']);
+        $hasInvoiceKeyword = (bool) preg_match('/\b(fatura|boleto|conta|vencimento)\b/iu', $caption.' '.($filename ?? ''));
+
+        if (! $hasInvoiceCode && ! $hasInvoiceKeyword) {
+            return false;
+        }
+
+        $invoiceData['external_message_id'] = $messageId ? "wa-invoice-{$messageId}" : null;
+
+        $synced = $this->resolveEmailSyncService()->syncInvoicePayload(
+            invoiceData: $invoiceData,
+            notifyWhatsApp: true,
+            replyJid: $remoteJid
+        );
+
+        return $synced !== null;
+    }
+
+    /**
+     * Check if a payment receipt sent in the financial group matches a pending FixedBill of the current month.
+     *
+     * @param  array<string, mixed>  $extracted
+     */
+    private function tryProcessFixedBillPaymentReceipt(
+        string $remoteJid,
+        float $amount,
+        string $paymentDate,
+        array $extracted,
+        ?string $messageId
+    ): bool {
+        $now = Carbon::now();
+        $startOfMonth = $now->copy()->startOfMonth();
+        $endOfMonth = $now->copy()->endOfMonth();
+
+        $activeBills = FixedBill::with(['workspace', 'transactions' => function ($query) use ($startOfMonth, $endOfMonth) {
+            $query->whereBetween('occurred_at', [$startOfMonth->toDateString(), $endOfMonth->toDateString()])
+                ->orderByDesc('occurred_at');
+        }])->where('is_active', true)->get();
+
+        $recipientLower = mb_strtolower((string) ($extracted['recipient_name'] ?? ''));
+
+        $matchedBill = null;
+        $pendingTx = null;
+
+        foreach ($activeBills as $bill) {
+            $alreadyPaid = $bill->transactions->first(fn (Transaction $t) => $t->status === TransactionStatus::Paid);
+            if ($alreadyPaid) {
+                continue;
+            }
+
+            /** @var Transaction|null $candidateTx */
+            $candidateTx = $bill->transactions->first();
+            $targetAmount = $candidateTx ? (float) $candidateTx->amount : (float) $bill->estimated_amount;
+
+            // Match by amount (within R$ 0.99 tolerance) or by recipient name (CPFL / Alares)
+            $amountMatches = abs($targetAmount - $amount) <= 0.99;
+            $billNameLower = mb_strtolower($bill->name);
+            $recipientMatches = ($recipientLower !== '' && (
+                (str_contains($recipientLower, 'cpfl') && (str_contains($billNameLower, 'cpfl') || str_contains($billNameLower, 'luz') || str_contains($billNameLower, 'energia')))
+                || (str_contains($recipientLower, 'alares') && (str_contains($billNameLower, 'alares') || str_contains($billNameLower, 'internet')))
+            ));
+
+            if ($amountMatches || ($recipientMatches && abs($targetAmount - $amount) <= 25.00)) {
+                $matchedBill = $bill;
+                $pendingTx = $candidateTx;
+                break;
+            }
+        }
+
+        if (! $matchedBill) {
+            return false;
+        }
+
+        $txService = app(TransactionService::class);
+
+        if ($pendingTx) {
+            $txService->update($pendingTx, [
+                'status' => TransactionStatus::Paid,
+                'amount' => $amount,
+                'occurred_at' => $paymentDate,
+                'bank_account_id' => $pendingTx->bank_account_id ?: $matchedBill->preferred_bank_account_id,
+            ]);
+        } else {
+            $txService->create([
+                'workspace_id' => $matchedBill->workspace_id,
+                'created_by_user_id' => $matchedBill->workspace?->owner_id ?? 1,
+                'category_id' => $matchedBill->category_id,
+                'bank_account_id' => $matchedBill->preferred_bank_account_id,
+                'fixed_bill_id' => $matchedBill->id,
+                'type' => $matchedBill->type ?? TransactionType::Expense,
+                'status' => TransactionStatus::Paid,
+                'description' => "Pagamento {$matchedBill->name}",
+                'amount' => $amount,
+                'occurred_at' => $paymentDate,
+            ]);
+        }
+
+        $formattedAmount = number_format($amount, 2, ',', '.');
+        $this->notificationService->sendText(
+            $remoteJid,
+            "✅ *Pagamento registrado no BMO!*\n\n🏠 *Conta:* {$matchedBill->name}\n💰 *Valor pago:* R$ {$formattedAmount}\n📅 *Data:* ".Carbon::parse($paymentDate)->format('d/m/Y'),
+            $messageId
+        );
+
+        return true;
+    }
+
+    private function resolveEmailSyncService(): EmailInvoiceSyncService
+    {
+        return $this->emailInvoiceSyncService ?? app(EmailInvoiceSyncService::class);
     }
 }

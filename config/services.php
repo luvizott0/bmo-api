@@ -41,10 +41,21 @@ return [
         'instance' => env('EVOLUTION_INSTANCE', 'bmo'),
         'webhook_secret' => env('EVOLUTION_WEBHOOK_SECRET', 'bmo_wh_secret_7a8b9c'),
         'subscriptions_reminder_jid' => env('WHATSAPP_SUBSCRIPTION_REMINDER_JID', env('WHATSAPP_GROUP_JID')),
+        'financial_group_jid' => env('WHATSAPP_FINANCIAL_GROUP_JID', '120363414319267741@g.us'),
     ],
 
     'receipt_extractor' => [
         'url' => env('RECEIPT_EXTRACTOR_URL', 'http://127.0.0.1:8084/extract'),
+        'base_url' => env('RECEIPT_EXTRACTOR_BASE_URL', 'http://127.0.0.1:8084'),
+    ],
+
+    'invoice_email' => [
+        'host' => env('INVOICE_EMAIL_HOST', 'outlook.office365.com'),
+        'port' => (int) env('INVOICE_EMAIL_PORT', 993),
+        'address' => env('INVOICE_EMAIL_ADDRESS', 'luvizott0@outlook.com'),
+        'password' => env('INVOICE_EMAIL_PASSWORD', 'xauicsetdhidiqgt'),
+        'folder' => env('INVOICE_EMAIL_FOLDER', 'INBOX'),
+        'oauth_client_id' => env('INVOICE_EMAIL_OAUTH_CLIENT_ID', '9e5f94bc-e8a4-4e73-b8be-63364c29d753'),
     ],
 
 ];

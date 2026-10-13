@@ -29,6 +29,8 @@ class TransactionResource extends JsonResource
             'fixed_bill_id' => $this->fixed_bill_id,
             'subscription_id' => $this->subscription_id,
             'notes' => $this->notes,
+            'barcode' => $this->barcode,
+            'pix_code' => $this->pix_code,
             'installment_number' => $this->installment_number,
             'total_installments' => $this->total_installments,
             'installment_group_id' => $this->installment_group_id,
