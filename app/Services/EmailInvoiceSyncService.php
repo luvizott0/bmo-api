@@ -212,7 +212,7 @@ class EmailInvoiceSyncService
      *     items: array<int, array<string, mixed>>
      * }
      */
-    public function syncFromEmail(bool $notifyWhatsApp = true): array
+    public function syncFromEmail(bool $notifyWhatsApp = true, ?int $workspaceId = null): array
     {
         $emailAddress = (string) config('services.invoice_email.address');
         $password = config('services.invoice_email.password');
@@ -261,7 +261,16 @@ class EmailInvoiceSyncService
                 $authStart = $this->startOutlookDeviceAuth();
                 if ($authStart['success'] ?? false) {
                     $deviceAuth = $authStart;
-                    $errorMsg = "Autorização OAuth2 do Outlook necessária: acesse {$authStart['verification_uri']} e digite o código {$authStart['user_code']}";
+                    $errorMsg = "Autorização única do Outlook necessária: acesse {$authStart['verification_uri']} e digite o código {$authStart['user_code']} (depois clique em Checar E-mails novamente).";
+
+                    $financialJid = config('services.evolution.financial_group_jid');
+                    if ($notifyWhatsApp && $financialJid && empty($authStart['reused'])) {
+                        $this->whatsAppService->sendText(
+                            $financialJid,
+                            "🔐 *Autorização única do Outlook necessária no BMO:*\n\n1️⃣ Acesse: {$authStart['verification_uri']}\n2️⃣ Digite o código abaixo para liberar a leitura automática das faturas:"
+                        );
+                        $this->whatsAppService->sendText($financialJid, (string) $authStart['user_code']);
+                    }
                 }
             }
 
@@ -280,7 +289,7 @@ class EmailInvoiceSyncService
         $invoices = array_reverse($fetchResult['invoices']);
 
         foreach ($invoices as $invoiceData) {
-            $result = $this->syncInvoicePayload($invoiceData, $notifyWhatsApp);
+            $result = $this->syncInvoicePayload($invoiceData, $notifyWhatsApp, null, $workspaceId);
             if ($result) {
                 $syncedItems[] = $result;
             }
@@ -301,8 +310,12 @@ class EmailInvoiceSyncService
      * @param  array<string, mixed>  $invoiceData
      * @return array<string, mixed>|null
      */
-    public function syncInvoicePayload(array $invoiceData, bool $notifyWhatsApp = true, ?string $replyJid = null): ?array
-    {
+    public function syncInvoicePayload(
+        array $invoiceData,
+        bool $notifyWhatsApp = true,
+        ?string $replyJid = null,
+        ?int $workspaceId = null
+    ): ?array {
         if (empty($invoiceData['amount']) || empty($invoiceData['provider'])) {
             return null;
         }
@@ -324,7 +337,7 @@ class EmailInvoiceSyncService
         $pixCode = $invoiceData['pix_code'] ?? null;
         $barcode = $invoiceData['barcode'] ?? null;
 
-        $fixedBill = $this->findOrCreateMatchingFixedBill($provider, $billType, $amount, $dueDateStr);
+        $fixedBill = $this->findOrCreateMatchingFixedBill($provider, $billType, $amount, $dueDateStr, $workspaceId);
         if (! $fixedBill) {
             return null;
         }
@@ -419,9 +432,14 @@ class EmailInvoiceSyncService
         string $provider,
         ?string $billType,
         float $amount,
-        ?string $dueDateStr
+        ?string $dueDateStr,
+        ?int $workspaceId = null
     ): ?FixedBill {
-        $activeBills = FixedBill::with('workspace')->where('is_active', true)->get();
+        $query = FixedBill::with('workspace')->where('is_active', true);
+        if ($workspaceId) {
+            $query->where('workspace_id', $workspaceId);
+        }
+        $activeBills = $query->get();
 
         $keywords = match (strtolower($provider)) {
             'cpfl' => ['cpfl', 'luz', 'energia', 'elétric', 'eletric'],
@@ -440,8 +458,11 @@ class EmailInvoiceSyncService
             }
         }
 
-        // If not found among active bills, check inactive bills too
-        $allBills = FixedBill::with('workspace')->get();
+        // If not found among active bills, check all bills (including other workspaces if workspaceId wasn't matched)
+        $allBills = FixedBill::with('workspace')
+            ->when($workspaceId, fn ($q) => $q->where('workspace_id', $workspaceId))
+            ->get();
+
         foreach ($allBills as $bill) {
             $lowerName = mb_strtolower($bill->name);
             foreach ($keywords as $kw) {
@@ -453,8 +474,11 @@ class EmailInvoiceSyncService
             }
         }
 
-        // Auto-create in the primary workspace if no bill exists yet
-        $workspace = Workspace::first();
+        // Auto-create in the target workspace (or primary workspace) if no bill exists yet
+        $workspace = $workspaceId ? Workspace::find($workspaceId) : Workspace::first();
+        if (! $workspace) {
+            $workspace = Workspace::first();
+        }
         if (! $workspace) {
             return null;
         }

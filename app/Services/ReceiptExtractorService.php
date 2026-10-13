@@ -153,7 +153,7 @@ class ReceiptExtractorService
         string $host = 'outlook.office365.com',
         int $port = 993,
         string $folder = 'INBOX',
-        int $maxMessages = 80
+        int $maxMessages = 400
     ): array {
         try {
             $response = $this->postToExtractor('/fetch-imap-invoices', [

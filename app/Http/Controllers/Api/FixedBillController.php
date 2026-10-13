@@ -239,9 +239,10 @@ class FixedBillController extends Controller
     /**
      * Trigger email invoice synchronization for CPFL and Alares.
      */
-    public function syncEmails(EmailInvoiceSyncService $syncService): JsonResponse
+    public function syncEmails(Request $request, EmailInvoiceSyncService $syncService): JsonResponse
     {
-        $result = $syncService->syncFromEmail(notifyWhatsApp: true);
+        $workspaceId = $request->workspace()?->id;
+        $result = $syncService->syncFromEmail(notifyWhatsApp: true, workspaceId: $workspaceId);
 
         if (! $result['success']) {
             return response()->json([
@@ -250,8 +251,12 @@ class FixedBillController extends Controller
             ], 422);
         }
 
+        $message = $result['synced'] > 0
+            ? "{$result['synced']} fatura(s) sincronizada(s) com sucesso ({$result['scanned']} e-mails verificados)."
+            : "Nenhuma nova fatura da CPFL ou Alares encontrada nos últimos {$result['scanned']} e-mails da caixa de entrada.";
+
         return response()->json([
-            'message' => "{$result['synced']} fatura(s) sincronizada(s) com sucesso.",
+            'message' => $message,
             'result' => $result,
         ]);
     }

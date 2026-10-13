@@ -441,7 +441,7 @@ def fetch_imap_invoices(
     host: str = "outlook.office365.com",
     port: int = 993,
     folder: str = "INBOX",
-    max_messages: int = 80,
+    max_messages: int = 400,
 ) -> Dict[str, Any]:
     """Connect to IMAP via XOAUTH2 or Basic Auth, scan recent emails for CPFL/Alares invoices, and extract data."""
     import email
@@ -473,28 +473,42 @@ def fetch_imap_invoices(
         recent_ids = list(reversed(recent_ids))  # Newest first
 
         invoices = []
-        scanned = 0
-        target_keywords = ("cpfl", "alares", "energia", "fatura", "conta", "boleto", "segunda via")
+        scanned = len(recent_ids)
+        target_keywords = ("cpfl", "alares", "energia", "elétric", "eletric", "fatura", "conta", "boleto", "segunda via", "nota fiscal")
 
-        for msg_id in recent_ids:
-            scanned += 1
-            # Peek headers first for speed
-            h_status, h_data = mail.fetch(msg_id, "(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE MESSAGE-ID)])")
-            if h_status != "OK" or not h_data or not h_data[0]:
+        # Batch fetch headers in chunks of 100 for high speed
+        candidate_msg_ids = []
+        batch_size = 100
+        for i in range(0, len(recent_ids), batch_size):
+            batch = recent_ids[i : i + batch_size]
+            batch_set = b",".join(batch)
+            h_status, h_data = mail.fetch(batch_set, "(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE MESSAGE-ID)])")
+            if h_status != "OK" or not h_data:
                 continue
 
-            raw_header_bytes = h_data[0][1] if isinstance(h_data[0], tuple) else b""
-            header_msg = email.message_from_bytes(raw_header_bytes)
-            subject = _decode_mime_header(header_msg.get("Subject"))
-            sender = _decode_mime_header(header_msg.get("From"))
-            message_id_hdr = _decode_mime_header(header_msg.get("Message-ID")) or f"imap-{msg_id.decode()}"
-            date_hdr = _decode_mime_header(header_msg.get("Date"))
+            for item in h_data:
+                if not isinstance(item, tuple) or len(item) < 2:
+                    continue
+                # Extract msg_id from response line e.g. b'1234 (BODY[HEADER.FIELDS ...'
+                envelope_line = item[0].decode("utf-8", errors="ignore")
+                m_id_match = re.match(r"^\s*(\d+)", envelope_line)
+                if not m_id_match:
+                    continue
+                cur_msg_id = m_id_match.group(1).encode("utf-8")
 
-            combined_meta = f"{sender} {subject}".lower()
-            if not any(kw in combined_meta for kw in target_keywords):
-                continue
+                raw_header_bytes = item[1]
+                header_msg = email.message_from_bytes(raw_header_bytes)
+                subject = _decode_mime_header(header_msg.get("Subject"))
+                sender = _decode_mime_header(header_msg.get("From"))
+                message_id_hdr = _decode_mime_header(header_msg.get("Message-ID")) or f"imap-{cur_msg_id.decode()}"
+                date_hdr = _decode_mime_header(header_msg.get("Date"))
 
-            # Only process if it's from/about CPFL or Alares (or mentions them in body)
+                combined_meta = f"{sender} {subject}".lower()
+                if any(kw in combined_meta for kw in target_keywords):
+                    candidate_msg_ids.append((cur_msg_id, subject, sender, message_id_hdr, date_hdr, combined_meta))
+
+        for msg_id, subject, sender, message_id_hdr, date_hdr, combined_meta in candidate_msg_ids:
+            # Fetch full message only for candidates
             f_status, f_data = mail.fetch(msg_id, "(BODY.PEEK[])")
             if f_status != "OK" or not f_data or not f_data[0]:
                 continue

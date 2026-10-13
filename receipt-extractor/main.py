@@ -46,7 +46,7 @@ class ImapFetchRequest(BaseModel):
     host: str = "outlook.office365.com"
     port: int = 993
     folder: str = "INBOX"
-    max_messages: int = 80
+    max_messages: int = 400
 
 
 @app.get("/health")
