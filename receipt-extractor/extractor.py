@@ -475,19 +475,34 @@ def fetch_imap_invoices(
                     return {"success": False, "error": f"Could not select folder {folder}", "invoices": []}
                 continue
 
-            status, data = mail.search(None, "ALL")
-            if status != "OK" or not data or not data[0]:
-                continue
+            search_terms = ['FROM "cpfl"', 'SUBJECT "cpfl"', 'FROM "alares"', 'SUBJECT "alares"']
+            matched_ids = set()
+            for term in search_terms:
+                try:
+                    s_st, s_data = mail.search(None, term)
+                    if s_st == "OK" and s_data and s_data[0]:
+                        matched_ids.update(s_data[0].split())
+                except Exception:
+                    pass
 
-            msg_ids = data[0].split()
-            folder_limit = max_messages if current_folder == folder else min(100, max_messages)
-            recent_ids = msg_ids[-folder_limit:] if len(msg_ids) > folder_limit else msg_ids
-            recent_ids = list(reversed(recent_ids))  # Newest first
+            if matched_ids:
+                sorted_ids = sorted(list(matched_ids), key=lambda x: int(x))
+                recent_ids = sorted_ids[-30:]  # Take up to 30 most recent provider emails
+                recent_ids = list(reversed(recent_ids))  # Newest first
+            else:
+                status, data = mail.search(None, "ALL")
+                if status != "OK" or not data or not data[0]:
+                    continue
+                msg_ids = data[0].split()
+                folder_limit = max_messages if current_folder == folder else min(100, max_messages)
+                recent_ids = msg_ids[-folder_limit:] if len(msg_ids) > folder_limit else msg_ids
+                recent_ids = list(reversed(recent_ids))
+
             scanned += len(recent_ids)
 
-            # Batch fetch headers in chunks of 100 for high speed
+            # Batch fetch headers
             candidate_msg_ids = []
-            batch_size = 100
+            batch_size = 50
             for i in range(0, len(recent_ids), batch_size):
                 batch = recent_ids[i : i + batch_size]
                 batch_set = b",".join(batch)
