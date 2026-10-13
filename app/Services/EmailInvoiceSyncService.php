@@ -476,8 +476,25 @@ class EmailInvoiceSyncService
             }
         }
 
-        // Auto-create in the target workspace (or primary workspace) if no bill exists yet
-        $workspace = $workspaceId ? Workspace::find($workspaceId) : Workspace::first();
+        // Auto-create in the target workspace (or primary household workspace) if no bill exists yet
+        $workspace = null;
+        if ($workspaceId) {
+            $workspace = Workspace::find($workspaceId);
+        }
+        if (! $workspace) {
+            // Pick the workspace that already has existing active bills (e.g. Workspace 2)
+            $existingBillWs = FixedBill::where('workspace_id', '!=', 1)->value('workspace_id');
+            if ($existingBillWs) {
+                $workspace = Workspace::find($existingBillWs);
+            }
+        }
+        if (! $workspace) {
+            // Pick Calebe / primary user's workspace
+            $calebe = \App\Models\User::where('id', '>', 1)->first();
+            if ($calebe && $calebe->workspaces()->exists()) {
+                $workspace = $calebe->workspaces()->first();
+            }
+        }
         if (! $workspace) {
             $workspace = Workspace::first();
         }
