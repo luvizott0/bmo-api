@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Release;
 use App\Models\Task;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -44,8 +45,9 @@ class AiTaskDispatcherService
             'branch_name' => $task->branch_name,
             'test_command' => $project->test_command ?: 'npm run build',
             'instructions_file' => $project->instructions_file ?: 'AGENTS.md',
-            'callback_url' => url("/webhooks/tasks/{$task->id}/ai-callback"),
+            'callback_url' => url("/api/webhooks/tasks/{$task->id}/ai-callback"),
             'gemini_api_key' => $geminiKey,
+
             'github_token' => $githubToken,
         ];
 
@@ -81,12 +83,14 @@ class AiTaskDispatcherService
         $status = $data['status'] ?? 'failed';
         $summary = $data['summary'] ?? '';
         $logs = $data['logs'] ?? [];
+        $previewUrl = $data['preview_url'] ?? ('http://' . strtolower($task->task_code) . '.preview.bmo');
 
         $aiLogs = $task->ai_logs ?? [];
         $aiLogs['last_execution'] = now()->toISOString();
         $aiLogs['summary'] = $summary;
         $aiLogs['logs'] = array_merge($aiLogs['logs'] ?? [], $logs);
         $aiLogs['test_result'] = $data['test_result'] ?? 'unknown';
+        $aiLogs['preview_url'] = $previewUrl;
 
         if ($status === 'success') {
             $task->update([
@@ -98,23 +102,15 @@ class AiTaskDispatcherService
             $projectGroupJid = config('services.whatsapp.projects_group_jid') ?: config('services.evolution.projects_group_jid');
             if ($projectGroupJid) {
                 $project = $task->project;
-                $prefix = $project?->prefix ?? 'PRJ';
                 $projectName = $project?->name ?? 'Projeto';
-
-                $sandboxDomain = strtolower($prefix) . '.bmo';
-                if ($prefix === 'CPH') {
-                    $sandboxDomain = 'capihouse.bmo';
-                } elseif ($prefix === 'CST') {
-                    $sandboxDomain = 'capyshowtime.bmo';
-                }
 
                 $msg = "🔔 *[{$task->task_code}] Tarefa desenvolvida pela IA!*\n\n"
                     . "📁 *Projeto:* {$projectName}\n"
                     . "🎯 *Título:* {$task->title}\n"
                     . "🌿 *Branch:* `{$task->branch_name}`\n"
-                    . "🧪 *Sandbox:* http://{$sandboxDomain}\n\n"
+                    . "🧪 *Preview Isolado:* {$previewUrl}\n\n"
                     . "📝 *Resumo:* {$summary}\n\n"
-                    . "👉 Abra o board do *BMO Organizer* para validar e aprovar o merge para `develop`!";
+                    . "👉 Abra o board do *BMO Organizer* para testar no preview e aprovar a tarefa!";
 
                 $this->whatsAppService->sendText($projectGroupJid, $msg);
             }
@@ -173,6 +169,183 @@ class AiTaskDispatcherService
             Log::error('GitHub merge request error', ['error' => $e->getMessage()]);
             return false;
         }
+    }
+
+    /**
+     * Deploy all tasks associated with a release into the 'release' branch (Homelab Sandbox deploy).
+     */
+    public function deployReleaseToSandbox(Release $release): array
+    {
+        $project = $release->project;
+        $githubToken = config('services.github.token');
+
+        if (! $project || ! $project->github_repo || ! $githubToken) {
+            throw new \RuntimeException('Repositório do GitHub ou token não configurado para o projeto.');
+        }
+
+        $repo = trim($project->github_repo, '/');
+        $release->load('tasks');
+        $tasks = $release->tasks;
+
+        if ($tasks->isEmpty()) {
+            throw new \RuntimeException('Nenhuma tarefa vinculada a esta release para deploy.');
+        }
+
+        $logs = $release->logs ?? [];
+        $logs[] = '[' . now()->format('H:i:s') . "] Iniciando deploy da release {$release->version} para o Sandbox...";
+
+        $mergedTasks = [];
+        $errors = [];
+
+        foreach ($tasks as $task) {
+            $branch = $task->branch_name;
+            if (! $branch) {
+                continue;
+            }
+
+            // GitHub API: POST /repos/{owner}/{repo}/merges
+            $url = "https://api.github.com/repos/{$repo}/merges";
+
+            try {
+                $response = Http::withToken($githubToken)
+                    ->withHeaders([
+                        'Accept' => 'application/vnd.github+json',
+                        'X-GitHub-Api-Version' => '2022-11-28',
+                    ])
+                    ->post($url, [
+                        'base' => 'release',
+                        'head' => $branch,
+                        'commit_message' => "Release {$release->version}: Merge {$task->task_code} ({$task->title}) into release",
+                    ]);
+
+                if ($response->successful()) {
+                    $logs[] = '[' . now()->format('H:i:s') . "] ✅ Branch '{$branch}' ({$task->task_code}) mergeada na 'release'.";
+                    $mergedTasks[] = $task->task_code;
+                } else {
+                    $errText = $response->json('message') ?? $response->body();
+                    $logs[] = '[' . now()->format('H:i:s') . "] ⚠️ Falha ao mergear branch '{$branch}': {$errText}";
+                    $errors[] = "{$task->task_code}: {$errText}";
+                }
+            } catch (\Throwable $e) {
+                $logs[] = '[' . now()->format('H:i:s') . "] ❌ Erro ao conectar com GitHub ({$branch}): {$e->getMessage()}";
+                $errors[] = "{$task->task_code}: {$e->getMessage()}";
+            }
+        }
+
+        $release->status = 'sandbox';
+        $release->deployed_to_sandbox_at = now();
+        $release->logs = $logs;
+        $release->save();
+
+        // Notificar no WhatsApp
+        $projectGroupJid = config('services.whatsapp.projects_group_jid') ?: config('services.evolution.projects_group_jid');
+        if ($projectGroupJid) {
+            $projectName = $project->name ?? 'Projeto';
+            $prefix = $project->prefix ?? 'PRJ';
+            $sandboxDomain = strtolower($prefix) . '.bmo';
+            if ($prefix === 'CPH') {
+                $sandboxDomain = 'capihouse.bmo';
+            } elseif ($prefix === 'CST') {
+                $sandboxDomain = 'capyshowtime.bmo';
+            }
+
+            $tasksList = implode(', ', $mergedTasks);
+            $msg = "🚀 *[{$projectName}] Release {$release->version} Deployada no Sandbox!*\n\n"
+                . "🏷️ *Título:* {$release->title}\n"
+                . "📋 *Tarefas:* {$tasksList}\n"
+                . "🧪 *Sandbox:* http://{$sandboxDomain}\n\n"
+                . "👉 Valide as funcionalidades integradas no sandbox antes de promover para produção!";
+
+            $this->whatsAppService->sendText($projectGroupJid, $msg);
+        }
+
+        return [
+            'success' => count($mergedTasks) > 0,
+            'merged_tasks' => $mergedTasks,
+            'errors' => $errors,
+            'logs' => $logs,
+        ];
+    }
+
+    /**
+     * Promote the tested release from 'release' branch into 'main' branch (Production deploy).
+     */
+    public function deployReleaseToProduction(Release $release): array
+    {
+        $project = $release->project;
+        $githubToken = config('services.github.token');
+
+        if (! $project || ! $project->github_repo || ! $githubToken) {
+            throw new \RuntimeException('Repositório do GitHub ou token não configurado para o projeto.');
+        }
+
+        $repo = trim($project->github_repo, '/');
+        $release->load('tasks');
+
+        $logs = $release->logs ?? [];
+        $logs[] = '[' . now()->format('H:i:s') . "] Promovendo Release {$release->version} da branch 'release' para 'main' (PRODUÇÃO)...";
+
+        // GitHub API: POST /repos/{owner}/{repo}/merges
+        $url = "https://api.github.com/repos/{$repo}/merges";
+
+        try {
+            $response = Http::withToken($githubToken)
+                ->withHeaders([
+                    'Accept' => 'application/vnd.github+json',
+                    'X-GitHub-Api-Version' => '2022-11-28',
+                ])
+                ->post($url, [
+                    'base' => 'main',
+                    'head' => 'release',
+                    'commit_message' => "Release {$release->version}: {$release->title} (Promoted to Production)",
+                ]);
+
+            if ($response->successful()) {
+                $logs[] = '[' . now()->format('H:i:s') . "] ✅ Branch 'release' mergeada com sucesso na 'main'!";
+            } else {
+                $errText = $response->json('message') ?? $response->body();
+                $logs[] = '[' . now()->format('H:i:s') . "] ❌ Falha no merge para 'main': {$errText}";
+                $release->logs = $logs;
+                $release->save();
+                throw new \RuntimeException("Falha ao promover release para main: {$errText}");
+            }
+        } catch (\Throwable $e) {
+            $logs[] = '[' . now()->format('H:i:s') . "] ❌ Erro de comunicação com o GitHub: {$e->getMessage()}";
+            $release->logs = $logs;
+            $release->save();
+            throw $e;
+        }
+
+        $release->status = 'production';
+        $release->deployed_to_production_at = now();
+        $release->logs = $logs;
+        $release->save();
+
+        // Marcar todas as tarefas vinculadas como 'done'
+        foreach ($release->tasks as $t) {
+            if ($t->status !== 'done') {
+                $t->update([
+                    'status' => 'done',
+                    'completed_at' => now(),
+                ]);
+            }
+        }
+
+        // Notificar no WhatsApp
+        $projectGroupJid = config('services.whatsapp.projects_group_jid') ?: config('services.evolution.projects_group_jid');
+        if ($projectGroupJid) {
+            $projectName = $project->name ?? 'Projeto';
+            $msg = "🎉 *[{$projectName}] Release {$release->version} Oficialmente em PRODUÇÃO!*\n\n"
+                . "🏷️ *Título:* {$release->title}\n"
+                . "🚀 Deploy automático disparado para Oracle Cloud + Cloudflare Pages!";
+
+            $this->whatsAppService->sendText($projectGroupJid, $msg);
+        }
+
+        return [
+            'success' => true,
+            'logs' => $logs,
+        ];
     }
 
     private function appendLog(Task $task, string $message): void

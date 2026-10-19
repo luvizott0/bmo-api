@@ -143,4 +143,9 @@ class Workspace extends Model
     {
         return $this->hasMany(Reminder::class);
     }
+
+    public function releases(): HasMany
+    {
+        return $this->hasMany(Release::class);
+    }
 }

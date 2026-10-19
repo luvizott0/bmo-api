@@ -14,6 +14,7 @@ use App\Http\Controllers\Api\SubscriptionController;
 use App\Http\Controllers\Api\TransactionController;
 use App\Http\Controllers\Api\CalendarEventController;
 use App\Http\Controllers\Api\ProjectController;
+use App\Http\Controllers\Api\ReleaseController;
 use App\Http\Controllers\Api\ReminderController;
 use App\Http\Controllers\Api\TaskController;
 use App\Http\Controllers\Api\WhatsAppWebhookController;
@@ -116,6 +117,11 @@ Route::middleware('auth:sanctum')->group(function (): void {
         Route::patch('/tasks/{task}/status', [TaskController::class, 'updateStatus']);
         Route::apiResource('projects', ProjectController::class);
         Route::apiResource('tasks', TaskController::class);
+
+        // Releases & Deployments
+        Route::post('/releases/{release}/deploy-sandbox', [ReleaseController::class, 'deploySandbox']);
+        Route::post('/releases/{release}/deploy-production', [ReleaseController::class, 'deployProduction']);
+        Route::apiResource('releases', ReleaseController::class);
 
         // Calendar Events & Reminders
         Route::get('/calendar-events/today-summary', [CalendarEventController::class, 'todaySummary']);

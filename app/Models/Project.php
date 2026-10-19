@@ -44,6 +44,11 @@ class Project extends Model
         return $this->hasMany(Task::class);
     }
 
+    public function releases(): HasMany
+    {
+        return $this->hasMany(Release::class);
+    }
+
     /**
      * Generate the next atomic sequential task code (e.g. CST-001).
      *

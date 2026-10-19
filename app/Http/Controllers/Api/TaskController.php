@@ -67,7 +67,7 @@ class TaskController extends Controller
             'project_id' => ['required', 'exists:projects,id'],
             'title' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
-            'status' => ['nullable', 'string', 'in:backlog,todo,in_progress,review,done'],
+            'status' => ['nullable', 'string', 'in:backlog,todo,in_progress,review,reviewed,done'],
             'priority' => ['nullable', 'string', 'in:low,medium,high,urgent'],
             'assignee_type' => ['nullable', 'string', 'in:user,ai'],
             'due_date' => ['nullable', 'date'],
@@ -129,7 +129,7 @@ class TaskController extends Controller
         $validated = $request->validate([
             'title' => ['sometimes', 'required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
-            'status' => ['sometimes', 'string', 'in:backlog,todo,in_progress,review,done'],
+            'status' => ['sometimes', 'string', 'in:backlog,todo,in_progress,review,reviewed,done'],
             'priority' => ['sometimes', 'string', 'in:low,medium,high,urgent'],
             'branch_name' => ['nullable', 'string', 'max:255'],
             'assignee_type' => ['sometimes', 'string', 'in:user,ai'],
@@ -160,7 +160,7 @@ class TaskController extends Controller
         $this->ensureWorkspaceTask($request, $task);
 
         $validated = $request->validate([
-            'status' => ['required', 'string', 'in:backlog,todo,in_progress,review,done'],
+            'status' => ['required', 'string', 'in:backlog,todo,in_progress,review,reviewed,done'],
             'order' => ['nullable', 'integer'],
         ]);
 
@@ -186,9 +186,24 @@ class TaskController extends Controller
             $this->aiDispatcher->dispatchTask($task);
         }
 
-        // Automatic Merge to Base Branch (e.g. develop) when moving from review to done
-        if ($newStatus === 'done' && $oldStatus === 'review' && $task->branch_name) {
-            $this->aiDispatcher->mergeToBaseBranch($task);
+        // Automatic Merge to Base Branch (e.g. develop) when moving to 'reviewed'
+        if ($newStatus === 'reviewed') {
+            if ($task->branch_name) {
+                $merged = $this->aiDispatcher->mergeToBaseBranch($task);
+                if ($merged) {
+                    $task->update([
+                        'status' => 'done',
+                        'completed_at' => now(),
+                    ]);
+                    $task->refresh();
+                }
+            } else {
+                $task->update([
+                    'status' => 'done',
+                    'completed_at' => now(),
+                ]);
+                $task->refresh();
+            }
         }
 
         return (new TaskResource($task))->response();
