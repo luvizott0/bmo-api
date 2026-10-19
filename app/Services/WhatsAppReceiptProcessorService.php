@@ -776,16 +776,20 @@ class WhatsAppReceiptProcessorService
             return;
         }
 
-        // 4. Create Task via WhatsApp: "criar tarefa no CST: Titulo" ou "/tarefa CST Titulo"
+        // 4. Create Task via WhatsApp with natural language:
+        // Ex: "criar tarefa no CST: mudar a cor do botão...", "criar tarefa: precisa adicionar busca...", "/tarefa CST ...", "/tarefa ..."
         if (
-            preg_match('/^(criar\s+tarefa(\s+no|\s+para)?\s+([a-zA-Z0-9]+)\s*:\s*(.+))$/iu', $normalized, $matches)
-            || preg_match('/^\/?nova-tarefa\s+([a-zA-Z0-9]+)\s+(.+)$/iu', $normalized, $matches)
+            preg_match('/^(criar\s+tarefa(\s+no|\s+para)?(\s+([a-zA-Z0-9]+))?\s*:\s*(.+))$/iu', $text, $matches)
+            || preg_match('/^\/?(tarefa|nova-tarefa)(\s+([a-zA-Z0-9]+))?\s*:\s*(.+)$/iu', $text, $matches)
+            || preg_match('/^\/?(tarefa|nova-tarefa)\s+([a-zA-Z0-9]+)\s+(.+)$/iu', $text, $matches)
         ) {
-            $prefix = strtoupper(trim($matches[3] ?? ''));
-            $title = trim($matches[4] ?? ($matches[2] ?? ''));
-            $this->createTaskFromWhatsApp($remoteJid, $prefix, $title, $messageId);
+            $prefix = ! empty($matches[4]) ? strtoupper(trim($matches[4])) : (! empty($matches[3]) && strlen($matches[3]) <= 6 ? strtoupper(trim($matches[3])) : null);
+            $userInput = trim($matches[5] ?? ($matches[4] ?? ($matches[3] ?? '')));
+            if ($userInput !== '') {
+                $this->createTaskFromWhatsApp($remoteJid, $prefix, $userInput, $messageId);
 
-            return;
+                return;
+            }
         }
 
         // 5. Command: List bills to pay ("me mostre as contas a pagar", "contas a pagar", "/contas", etc.)
@@ -944,13 +948,87 @@ class WhatsAppReceiptProcessorService
     }
 
     /**
-     * Create a new task directly from WhatsApp.
+     * Create a new task directly from WhatsApp with AI comprehension.
      */
-    private function createTaskFromWhatsApp(string $remoteJid, string $prefix, string $title, ?string $messageId = null): void
+    private function createTaskFromWhatsApp(string $remoteJid, ?string $explicitPrefix, string $userInput, ?string $messageId = null): void
     {
-        $project = \App\Models\Project::where('prefix', $prefix)->first();
+        $projects = \App\Models\Project::where('is_active', true)->get();
+        if ($projects->isEmpty()) {
+            $this->notificationService->sendText($remoteJid, "❌ Nenhum projeto ativo cadastrado no BMO.", $messageId);
+            return;
+        }
+
+        $projectListStr = $projects->map(fn ($p) => "• [{$p->prefix}] {$p->name} (Backend: {$p->backend_repo}, Frontend: {$p->frontend_repo})")->implode("\n");
+
+        $geminiKey = config('services.gemini.api_key');
+
+        $extractedPrefix = $explicitPrefix;
+        $title = $userInput;
+        $description = $userInput;
+        $priority = 'medium';
+        $scope = 'auto';
+
+        if ($geminiKey) {
+            $systemPrompt = <<<PROMPT
+Você é o assistente inteligente BMO responsável por organizar o Kanban de desenvolvimento.
+O usuário enviou uma mensagem pedindo uma tarefa, melhoria ou correção de bug.
+Sua missão é extrair as seguintes informações e retornar EXCLUSIVAMENTE um JSON:
+{
+  "prefix": "SIGLA_DO_PROJETO", // escolha o projeto mais adequado dentre a lista fornecida se não for explícito
+  "title": "Título conciso e profissional em poucas palavras",
+  "description": "Descrição detalhada e estruturada do que deve ser feito com base no contexto enviado pelo usuário",
+  "priority": "low" | "medium" | "high" | "urgent",
+  "scope": "frontend" | "backend" | "fullstack" | "auto"
+}
+
+PROJETOS DISPONÍVEIS:
+{$projectListStr}
+PROMPT;
+
+            try {
+                $url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={$geminiKey}";
+                $resp = \Illuminate\Support\Facades\Http::timeout(15)->post($url, [
+                    'contents' => [
+                        ['parts' => [['text' => "{$systemPrompt}\n\nTEXTO DO USUÁRIO:\n{$userInput}"]]],
+                    ],
+                    'generationConfig' => [
+                        'temperature' => 0.2,
+                        'responseMimeType' => 'application/json',
+                    ],
+                ]);
+
+                if ($resp->successful()) {
+                    $jsonText = $resp->json('candidates.0.content.parts.0.text');
+                    $parsed = json_decode($jsonText, true);
+                    if (! empty($parsed['title'])) {
+                        $title = $parsed['title'];
+                    }
+                    if (! empty($parsed['description'])) {
+                        $description = $parsed['description'];
+                    }
+                    if (! empty($parsed['priority'])) {
+                        $priority = $parsed['priority'];
+                    }
+                    if (! empty($parsed['scope'])) {
+                        $scope = $parsed['scope'];
+                    }
+                    if (! $extractedPrefix && ! empty($parsed['prefix'])) {
+                        $extractedPrefix = strtoupper(trim($parsed['prefix']));
+                    }
+                }
+            } catch (\Throwable $e) {
+                \Illuminate\Support\Facades\Log::warning('Falha ao interpretar tarefa com Gemini: ' . $e->getMessage());
+            }
+        }
+
+        // If no prefix was detected, default to first active project or ask
+        if (! $extractedPrefix) {
+            $extractedPrefix = $projects->first()?->prefix;
+        }
+
+        $project = $projects->firstWhere('prefix', strtoupper($extractedPrefix));
         if (! $project) {
-            $this->notificationService->sendText($remoteJid, "❌ Projeto com a sigla *[{$prefix}]* não encontrado.", $messageId);
+            $this->notificationService->sendText($remoteJid, "❌ Não consegui identificar a qual projeto essa tarefa pertence. Envie indicando a sigla (ex: `/tarefa CST ...`).", $messageId);
             return;
         }
 
@@ -962,21 +1040,30 @@ class WhatsAppReceiptProcessorService
             'task_code' => $codeData['code'],
             'task_number' => $codeData['number'],
             'title' => $title,
+            'description' => $description,
             'status' => 'todo',
-            'priority' => 'medium',
-            'target_scope' => 'auto',
+            'priority' => $priority,
+            'target_scope' => $scope,
             'assignee_type' => 'ai',
         ]);
 
-        $this->notificationService->sendText(
-            $remoteJid,
-            "✅ *Tarefa [{$task->task_code}] criada no Kanban!*\n\n"
-            . "📁 *Projeto:* {$project->name}\n"
+        $scopeBadge = match ($scope) {
+            'backend' => '⚙️ Backend (API)',
+            'frontend' => '💻 Frontend (UI)',
+            'fullstack' => '🌐 Fullstack',
+            default => '🤖 Auto (Decisão da IA)'
+        };
+
+        $msg = "✅ *Nova Tarefa Registrada no Kanban!*\n\n"
+            . "🆔 *ID:* `{$task->task_code}`\n"
+            . "📁 *Projeto:* {$project->name} `[{$project->prefix}]`\n"
             . "🎯 *Título:* {$task->title}\n"
-            . "📌 *Status:* A Fazer (Pronta para a IA)\n\n"
-            . "👉 Para iniciar o desenvolvimento agora envie: `/iniciar {$task->task_code}`",
-            $messageId
-        );
+            . "🎯 *Escopo:* {$scopeBadge}\n"
+            . "⚡ *Prioridade:* " . strtoupper($priority) . "\n\n"
+            . "📝 *Contexto:* \n{$description}\n\n"
+            . "👉 Para mandar a IA desenvolver agora envie: `/iniciar {$task->task_code}`";
+
+        $this->notificationService->sendText($remoteJid, $msg, $messageId);
     }
 
     /**
