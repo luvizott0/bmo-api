@@ -12,6 +12,10 @@ use App\Http\Controllers\Api\StockCategoryController;
 use App\Http\Controllers\Api\StockShareController;
 use App\Http\Controllers\Api\SubscriptionController;
 use App\Http\Controllers\Api\TransactionController;
+use App\Http\Controllers\Api\CalendarEventController;
+use App\Http\Controllers\Api\ProjectController;
+use App\Http\Controllers\Api\ReminderController;
+use App\Http\Controllers\Api\TaskController;
 use App\Http\Controllers\Api\WhatsAppWebhookController;
 use App\Http\Controllers\Api\WorkspaceController;
 use App\Http\Controllers\Api\WorkspaceInvitationController;
@@ -19,6 +23,8 @@ use Illuminate\Support\Facades\Route;
 
 // Webhooks
 Route::post('/webhooks/whatsapp', [WhatsAppWebhookController::class, 'handle']);
+Route::post('/webhooks/tasks/{task}/ai-callback', [TaskController::class, 'aiCallback']);
+Route::post('/api/tasks/{task}/ai-callback', [TaskController::class, 'aiCallback']);
 
 // Public Auth routes
 Route::prefix('auth')->group(function (): void {
@@ -104,5 +110,17 @@ Route::middleware('auth:sanctum')->group(function (): void {
         Route::get('/stock-shares/invitations/{token}', [StockShareController::class, 'showInvite']);
         Route::post('/stock-shares/invitations/{token}/accept', [StockShareController::class, 'acceptInvite']);
         Route::post('/stock-shares/leave', [StockShareController::class, 'leave']);
+
+        // Projects & Kanban Tasks
+        Route::get('/tasks/in-progress', [TaskController::class, 'inProgress']);
+        Route::patch('/tasks/{task}/status', [TaskController::class, 'updateStatus']);
+        Route::apiResource('projects', ProjectController::class);
+        Route::apiResource('tasks', TaskController::class);
+
+        // Calendar Events & Reminders
+        Route::get('/calendar-events/today-summary', [CalendarEventController::class, 'todaySummary']);
+        Route::apiResource('calendar-events', CalendarEventController::class);
+        Route::patch('/reminders/{reminder}/toggle', [ReminderController::class, 'toggle']);
+        Route::apiResource('reminders', ReminderController::class);
     });
 });

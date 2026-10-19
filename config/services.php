@@ -58,4 +58,21 @@ return [
         'oauth_client_id' => env('INVOICE_EMAIL_OAUTH_CLIENT_ID', '9e5f94bc-e8a4-4e73-b8be-63364c29d753'),
     ],
 
+    'ai_worker' => [
+        'url' => env('AI_WORKER_URL', 'http://bmo-ai-worker:5005'),
+    ],
+
+    'gemini' => [
+        'api_key' => env('GEMINI_API_KEY'),
+    ],
+
+    'github' => [
+        'token' => env('GITHUB_TOKEN'),
+    ],
+
+    'whatsapp' => [
+        'projects_group_jid' => env('WHATSAPP_PROJECTS_GROUP_JID'),
+        'routine_group_jid' => env('WHATSAPP_ROUTINE_GROUP_JID'),
+    ],
+
 ];
