@@ -744,7 +744,51 @@ class WhatsAppReceiptProcessorService
     {
         $normalized = mb_strtolower(trim($text));
 
-        // 1. Command: List bills to pay ("me mostre as contas a pagar", "contas a pagar", "/contas", etc.)
+        // 1. Projects Command: /projetos ("listar projetos", "meus projetos")
+        if (
+            preg_match('/^\/?(projetos|repos|repositorios)$/iu', $normalized)
+            || preg_match('/\b(listar?\s+projetos|quais\s+(s[aã]o\s+)?(os\s+)?projetos|ver\s+projetos)\b/iu', $normalized)
+        ) {
+            $this->sendProjectsList($remoteJid, $messageId);
+
+            return;
+        }
+
+        // 2. Tasks Command: /tarefas or /tarefas CST ("quais as tarefas do cst", "tarefas")
+        if (
+            preg_match('/^\/?(tarefas|tasks|board)(\s+([a-zA-Z0-9]+))?$/iu', $normalized, $matches)
+            || preg_match('/\b(quais\s+(as\s+)?tarefas(\s+do\s+([a-zA-Z0-9]+))?|listar?\s+tarefas)\b/iu', $normalized)
+        ) {
+            $prefix = $matches[3] ?? null;
+            $this->sendTasksList($remoteJid, $prefix, $messageId);
+
+            return;
+        }
+
+        // 3. Start AI Task Command: /iniciar CST-001 ("iniciar ia CST-001", "desenvolver CST-001")
+        if (
+            preg_match('/^\/?(iniciar|desenvolver|executar|ia)(\s+([a-zA-Z0-9]+-[0-9]+))$/iu', $normalized, $matches)
+            || preg_match('/\b(iniciar\s+(a\s+)?ia\s+([a-zA-Z0-9]+-[0-9]+))\b/iu', $normalized, $matches)
+        ) {
+            $taskCode = strtoupper(trim($matches[3] ?? ''));
+            $this->startAiTaskFromWhatsApp($remoteJid, $taskCode, $messageId);
+
+            return;
+        }
+
+        // 4. Create Task via WhatsApp: "criar tarefa no CST: Titulo" ou "/tarefa CST Titulo"
+        if (
+            preg_match('/^(criar\s+tarefa(\s+no|\s+para)?\s+([a-zA-Z0-9]+)\s*:\s*(.+))$/iu', $normalized, $matches)
+            || preg_match('/^\/?nova-tarefa\s+([a-zA-Z0-9]+)\s+(.+)$/iu', $normalized, $matches)
+        ) {
+            $prefix = strtoupper(trim($matches[3] ?? ''));
+            $title = trim($matches[4] ?? ($matches[2] ?? ''));
+            $this->createTaskFromWhatsApp($remoteJid, $prefix, $title, $messageId);
+
+            return;
+        }
+
+        // 5. Command: List bills to pay ("me mostre as contas a pagar", "contas a pagar", "/contas", etc.)
         if (
             preg_match('/\b(contas?\s+a\s+pagar|me\s+mostre\s+as\s+contas|mostrar\s+contas|contas?\s+pendentes?|contas?\s+da\s+casa|contas?\s+do\s+m[eê]s|quais\s+as\s+contas|listar?\s+contas)\b/iu', $normalized)
             || preg_match('/^\/?(contas|boletos|faturas|pagar)$/iu', $normalized)
@@ -754,7 +798,7 @@ class WhatsAppReceiptProcessorService
             return;
         }
 
-        // 2. Command: Sync emails on demand ("atualizar contas", "checar emails", "/emails", "/sincronizar")
+        // 6. Command: Sync emails on demand ("atualizar contas", "checar emails", "/emails", "/sincronizar")
         if (
             preg_match('/\b(sincronizar\s+contas|atualizar\s+contas|checar\s+e?-?mails?|verificar\s+e?-?mails?|buscar\s+contas\s+no\s+e?-?mail)\b/iu', $normalized)
             || preg_match('/^\/?(sync|emails|sincronizar)$/iu', $normalized)
@@ -764,18 +808,175 @@ class WhatsAppReceiptProcessorService
             return;
         }
 
-        // 3. Command: Help ("/ajuda", "/comandos", "bmo ajuda")
+        // 7. Command: Help ("/ajuda", "/comandos", "bmo ajuda")
         if (preg_match('/^(\/ajuda|\/comandos|bmo\s+ajuda)$/iu', $normalized)) {
             $helpText = implode("\n", [
-                '🤖 *Comandos Financeiros do BMO:*',
+                '🤖 *Comandos do BMO no WhatsApp:*',
                 '',
-                '• *"me mostre as contas a pagar"* (ou */contas*) — Lista todas as contas da casa do mês atual, valores e envia o Pix Copia e Cola / Código de Barras.',
-                '• *"atualizar contas"* (ou */emails*) — Verifica a caixa de entrada do Outlook atrás de novas faturas da CPFL e Alares.',
-                '• *Enviar PDF da Fatura* — Atualiza automaticamente o valor da conta do mês e extrai o Pix/Código de Barras.',
-                '• *Enviar Comprovante de Pagamento* — Dá baixa automática na conta correspondente.',
+                '📂 *Projetos & Tarefas:*',
+                '• */projetos* — Lista todos os projetos cadastrados e repositórios.',
+                '• */tarefas* ou */tarefas CST* — Lista tarefas abertas de um projeto.',
+                '• */iniciar CST-001* — Dispara o Agente de IA para desenvolver a tarefa.',
+                '• *criar tarefa no CST: Título da tarefa* — Adiciona nova tarefa direto no Kanban.',
+                '',
+                '💰 *Financeiro:*',
+                '• */contas* — Lista contas da casa do mês com Pix Copia e Cola.',
+                '• */atualizar contas* — Checa e-mails do Outlook atrás de novas faturas.',
+                '• *Enviar PDF da Fatura* — Atualiza valor da fatura.',
+                '• *Enviar Comprovante* — Dá baixa automática nas assinaturas/contas.',
             ]);
             $this->notificationService->sendText($remoteJid, $helpText, $messageId);
         }
+    }
+
+    /**
+     * Send list of active projects and repos.
+     */
+    private function sendProjectsList(string $remoteJid, ?string $messageId = null): void
+    {
+        $projects = \App\Models\Project::where('is_active', true)->withCount('tasks')->orderBy('name')->get();
+
+        if ($projects->isEmpty()) {
+            $this->notificationService->sendText($remoteJid, "📂 *Nenhum projeto ativo cadastrado no BMO.*", $messageId);
+            return;
+        }
+
+        $lines = ["📂 *Projetos Cadastrados no BMO:*", ""];
+        foreach ($projects as $p) {
+            $lines[] = "• *[{$p->prefix}] {$p->name}* — {$p->tasks_count} tarefas";
+            if ($p->backend_repo) {
+                $lines[] = "  ↳ API: `{$p->backend_repo}`";
+            }
+            if ($p->frontend_repo) {
+                $lines[] = "  ↳ PWA: `{$p->frontend_repo}`";
+            }
+            if (! $p->backend_repo && ! $p->frontend_repo && $p->github_repo) {
+                $lines[] = "  ↳ Repo: `{$p->github_repo}`";
+            }
+        }
+
+        $lines[] = "";
+        $lines[] = "💡 *Dica:* Envie `/tarefas [SIGLA]` (ex: `/tarefas CST`) para ver as tarefas abertas.";
+
+        $this->notificationService->sendText($remoteJid, implode("\n", $lines), $messageId);
+    }
+
+    /**
+     * Send list of tasks for a project or all projects.
+     */
+    private function sendTasksList(string $remoteJid, ?string $prefix = null, ?string $messageId = null): void
+    {
+        $query = \App\Models\Task::with('project')->where('status', '!=', 'done');
+
+        if ($prefix) {
+            $query->whereHas('project', function ($q) use ($prefix) {
+                $q->where('prefix', strtoupper($prefix));
+            });
+        }
+
+        $tasks = $query->orderBy('project_id')->orderBy('order')->take(20)->get();
+
+        if ($tasks->isEmpty()) {
+            $msg = $prefix
+                ? "📋 *Nenhuma tarefa pendente para o projeto [{$prefix}].*"
+                : "📋 *Nenhuma tarefa pendente encontrada no momento!*";
+            $this->notificationService->sendText($remoteJid, $msg, $messageId);
+            return;
+        }
+
+        $statusLabels = [
+            'backlog' => 'Backlog',
+            'todo' => 'A Fazer',
+            'in_progress' => 'Em Progresso ⚙️',
+            'review' => 'Em Revisão 🧪',
+            'reviewed' => 'Revisado ✅',
+        ];
+
+        $lines = ["📋 *Tarefas no BMO Organizer:*", ""];
+        foreach ($tasks as $t) {
+            $statusName = $statusLabels[$t->status] ?? $t->status;
+            $assignee = $t->assignee_type === 'ai' ? '🤖 IA' : '👤 Dev';
+            $lines[] = "• *[{$t->task_code}]* {$t->title}";
+            $lines[] = "  ↳ Status: _{$statusName}_ | {$assignee}";
+            if ($t->status === 'review') {
+                $previewUrl = $t->ai_logs['preview_url'] ?? ('http://' . strtolower($t->task_code) . '.preview.bmo');
+                $lines[] = "  ↳ Preview: {$previewUrl}";
+            }
+        }
+
+        $lines[] = "";
+        $lines[] = "💡 Envie `/iniciar [ID]` (ex: `/iniciar CST-001`) para o Agente de IA desenvolver.";
+
+        $this->notificationService->sendText($remoteJid, implode("\n", $lines), $messageId);
+    }
+
+    /**
+     * Start the AI agent worker for a specific task code.
+     */
+    private function startAiTaskFromWhatsApp(string $remoteJid, string $taskCode, ?string $messageId = null): void
+    {
+        $task = \App\Models\Task::where('task_code', $taskCode)->first();
+        if (! $task) {
+            $this->notificationService->sendText($remoteJid, "❌ Tarefa *{$taskCode}* não encontrada no BMO.", $messageId);
+            return;
+        }
+
+        $task->update([
+            'assignee_type' => 'ai',
+            'status' => 'in_progress',
+        ]);
+
+        $dispatcher = app(\App\Services\AiTaskDispatcherService::class);
+        $dispatched = $dispatcher->dispatchTask($task);
+
+        if ($dispatched) {
+            $this->notificationService->sendText(
+                $remoteJid,
+                "🤖 *Agente de IA iniciado para a tarefa [{$task->task_code}]!*\n\n"
+                . "🎯 *Título:* {$task->title}\n"
+                . "📁 *Projeto:* {$task->project?->name}\n\n"
+                . "⏳ O agente irá clonar o código, planejar e executar testes. Você será avisado assim que o preview estiver pronto!",
+                $messageId
+            );
+        } else {
+            $this->notificationService->sendText($remoteJid, "⚠️ Falha ao disparar Agente de IA para *{$taskCode}*. Verifique os logs do BMO.", $messageId);
+        }
+    }
+
+    /**
+     * Create a new task directly from WhatsApp.
+     */
+    private function createTaskFromWhatsApp(string $remoteJid, string $prefix, string $title, ?string $messageId = null): void
+    {
+        $project = \App\Models\Project::where('prefix', $prefix)->first();
+        if (! $project) {
+            $this->notificationService->sendText($remoteJid, "❌ Projeto com a sigla *[{$prefix}]* não encontrado.", $messageId);
+            return;
+        }
+
+        $codeData = $project->allocateNextTaskCode();
+
+        $task = \App\Models\Task::create([
+            'workspace_id' => $project->workspace_id,
+            'project_id' => $project->id,
+            'task_code' => $codeData['code'],
+            'task_number' => $codeData['number'],
+            'title' => $title,
+            'status' => 'todo',
+            'priority' => 'medium',
+            'target_scope' => 'auto',
+            'assignee_type' => 'ai',
+        ]);
+
+        $this->notificationService->sendText(
+            $remoteJid,
+            "✅ *Tarefa [{$task->task_code}] criada no Kanban!*\n\n"
+            . "📁 *Projeto:* {$project->name}\n"
+            . "🎯 *Título:* {$task->title}\n"
+            . "📌 *Status:* A Fazer (Pronta para a IA)\n\n"
+            . "👉 Para iniciar o desenvolvimento agora envie: `/iniciar {$task->task_code}`",
+            $messageId
+        );
     }
 
     /**
