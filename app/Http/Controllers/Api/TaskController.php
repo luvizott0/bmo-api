@@ -67,6 +67,7 @@ class TaskController extends Controller
             'project_id' => ['required', 'exists:projects,id'],
             'title' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
+            'type' => ['nullable', 'string', 'in:feature,bugfix,hotfix'],
             'status' => ['nullable', 'string', 'in:backlog,todo,in_progress,review,reviewed,done'],
             'priority' => ['nullable', 'string', 'in:low,medium,high,urgent'],
             'assignee_type' => ['nullable', 'string', 'in:user,ai'],
@@ -81,8 +82,15 @@ class TaskController extends Controller
         $taskNumber = $allocated['number'];
         $taskCode = $allocated['code'];
 
+        $type = $validated['type'] ?? 'feature';
+        $branchPrefix = match ($type) {
+            'hotfix' => 'hotfix',
+            'bugfix' => 'fix',
+            default => 'feat',
+        };
+
         $slugTitle = Str::slug(Str::limit($validated['title'], 40, ''));
-        $defaultBranch = "feat/{$taskCode}-{$slugTitle}";
+        $defaultBranch = "{$branchPrefix}/{$taskCode}-{$slugTitle}";
 
         $status = $validated['status'] ?? 'todo';
 
@@ -92,6 +100,7 @@ class TaskController extends Controller
             'task_number' => $taskNumber,
             'title' => $validated['title'],
             'description' => $validated['description'] ?? null,
+            'type' => $type,
             'status' => $status,
             'priority' => $validated['priority'] ?? 'medium',
             'branch_name' => $validated['branch_name'] ?? $defaultBranch,
@@ -129,6 +138,7 @@ class TaskController extends Controller
         $validated = $request->validate([
             'title' => ['sometimes', 'required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
+            'type' => ['sometimes', 'string', 'in:feature,bugfix,hotfix'],
             'status' => ['sometimes', 'string', 'in:backlog,todo,in_progress,review,reviewed,done'],
             'priority' => ['sometimes', 'string', 'in:low,medium,high,urgent'],
             'branch_name' => ['nullable', 'string', 'max:255'],

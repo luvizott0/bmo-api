@@ -135,7 +135,9 @@ class AiTaskDispatcherService
         }
 
         $repo = trim($project->github_repo, '/');
-        $baseBranch = $project->base_branch ?: 'develop';
+        // Hotfix merges directly to main; features and bugfixes merge to base branch (develop)
+        $isHotfix = ($task->type === 'hotfix');
+        $baseBranch = $isHotfix ? 'main' : ($project->base_branch ?: 'develop');
         $headBranch = $task->branch_name;
 
         // GitHub API: POST /repos/{owner}/{repo}/merges
