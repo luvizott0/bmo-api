@@ -133,6 +133,15 @@ class AiTaskDispatcherService
     public function handleCallback(Task $task, array $data): void
     {
         $status = $data['status'] ?? 'failed';
+
+        if ($status === 'running') {
+            $logMessage = $data['log'] ?? null;
+            if ($logMessage) {
+                $this->appendLog($task, $logMessage);
+            }
+            return;
+        }
+
         $summary = $data['summary'] ?? '';
         $logs = $data['logs'] ?? [];
         $previewUrl = $data['preview_url'] ?? ('http://' . strtolower($task->task_code) . '.preview.bmo');
