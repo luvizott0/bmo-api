@@ -19,7 +19,35 @@ class AiTaskDispatcherService
     public function dispatchTask(Task $task): bool
     {
         $project = $task->project;
-        if (! $project || ! $project->github_repo) {
+        if (! $project) {
+            $this->appendLog($task, 'Erro: Projeto não encontrado.');
+            return false;
+        }
+
+        // Determine repo, test command, and instructions file based on task target_scope or project configuration
+        $targetScope = $task->target_scope ?? 'auto';
+        $repo = null;
+        $testCommand = null;
+        $instructionsFile = null;
+
+        if ($targetScope === 'backend' && $project->backend_repo) {
+            $repo = $project->backend_repo;
+            $testCommand = $project->backend_test_cmd ?: 'php artisan test';
+            $instructionsFile = $project->backend_instructions_file ?: 'AGENTS.md';
+        } elseif ($targetScope === 'frontend' && $project->frontend_repo) {
+            $repo = $project->frontend_repo;
+            $testCommand = $project->frontend_test_cmd ?: 'npm run build';
+            $instructionsFile = $project->frontend_instructions_file ?: 'AGENTS.md';
+        } else {
+            // Auto or fullstack: prefer frontend_repo if set, then backend_repo, then legacy github_repo
+            $repo = $project->frontend_repo ?: ($project->backend_repo ?: $project->github_repo);
+            $testCommand = ($repo === $project->backend_repo ? $project->backend_test_cmd : $project->frontend_test_cmd)
+                ?: ($project->test_command ?: 'npm run build');
+            $instructionsFile = ($repo === $project->backend_repo ? $project->backend_instructions_file : $project->frontend_instructions_file)
+                ?: ($project->instructions_file ?: 'AGENTS.md');
+        }
+
+        if (! $repo) {
             Log::warning("AI Task Dispatcher: Task {$task->task_code} has no valid GitHub repository configured.");
             $this->appendLog($task, 'Erro: Projeto sem repositório do GitHub configurado.');
             return false;
@@ -40,14 +68,13 @@ class AiTaskDispatcherService
             'task_code' => $task->task_code,
             'task_title' => $task->title,
             'task_description' => $task->description ?? '',
-            'github_repo' => $project->github_repo,
+            'github_repo' => $repo,
             'base_branch' => $project->base_branch ?: 'develop',
             'branch_name' => $task->branch_name,
-            'test_command' => $project->test_command ?: 'npm run build',
-            'instructions_file' => $project->instructions_file ?: 'AGENTS.md',
+            'test_command' => $testCommand,
+            'instructions_file' => $instructionsFile,
             'callback_url' => url("/api/webhooks/tasks/{$task->id}/ai-callback"),
             'gemini_api_key' => $geminiKey,
-
             'github_token' => $githubToken,
         ];
 
@@ -130,11 +157,25 @@ class AiTaskDispatcherService
         $project = $task->project;
         $githubToken = config('services.github.token');
 
-        if (! $project || ! $project->github_repo || ! $githubToken || ! $task->branch_name) {
+        if (! $project || ! $githubToken || ! $task->branch_name) {
             return false;
         }
 
-        $repo = trim($project->github_repo, '/');
+        $targetScope = $task->target_scope ?? 'auto';
+        $repo = null;
+        if ($targetScope === 'backend' && $project->backend_repo) {
+            $repo = $project->backend_repo;
+        } elseif ($targetScope === 'frontend' && $project->frontend_repo) {
+            $repo = $project->frontend_repo;
+        } else {
+            $repo = $project->frontend_repo ?: ($project->backend_repo ?: $project->github_repo);
+        }
+
+        if (! $repo) {
+            return false;
+        }
+
+        $repo = trim($repo, '/');
         // Hotfix merges directly to main; features and bugfixes merge to base branch (develop)
         $isHotfix = ($task->type === 'hotfix');
         $baseBranch = $isHotfix ? 'main' : ($project->base_branch ?: 'develop');

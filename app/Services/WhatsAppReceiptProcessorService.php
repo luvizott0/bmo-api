@@ -812,7 +812,17 @@ class WhatsAppReceiptProcessorService
             return;
         }
 
-        // 7. Command: Help ("/ajuda", "/comandos", "bmo ajuda")
+        // 7. Quota Command: /cota or /limite or /saldo
+        if (
+            preg_match('/^\/?(cotas?|limites?|saldo|ia\s+cota|cota\s+ia|cota\s+gemini)$/iu', $normalized)
+            || preg_match('/\b(quanto\s+(de\s+)?cota|qual\s+o\s+limite\s+(de\s+)?(ia|gemini|antigravity)|saldo\s+(de\s+)?(ia|gemini|cota))\b/iu', $normalized)
+        ) {
+            $this->sendQuotaStatus($remoteJid, $messageId);
+
+            return;
+        }
+
+        // 8. Command: Help ("/ajuda", "/comandos", "bmo ajuda")
         if (preg_match('/^(\/ajuda|\/comandos|bmo\s+ajuda)$/iu', $normalized)) {
             $helpText = implode("\n", [
                 '🤖 *Comandos do BMO no WhatsApp:*',
@@ -822,6 +832,9 @@ class WhatsAppReceiptProcessorService
                 '• */tarefas* ou */tarefas CST* — Lista tarefas abertas de um projeto.',
                 '• */iniciar CST-001* — Dispara o Agente de IA para desenvolver a tarefa.',
                 '• *criar tarefa no CST: Título da tarefa* — Adiciona nova tarefa direto no Kanban.',
+                '',
+                '⚡ *Inteligência Artificial:*',
+                '• */cota* ou */limite* — Consulta o limite de 5h e semanal do Gemini/Antigravity.',
                 '',
                 '💰 *Financeiro:*',
                 '• */contas* — Lista contas da casa do mês com Pix Copia e Cola.',
@@ -1345,5 +1358,64 @@ PROMPT;
     private function resolveEmailSyncService(): EmailInvoiceSyncService
     {
         return $this->emailInvoiceSyncService ?? app(EmailInvoiceSyncService::class);
+    }
+
+    /**
+     * Send remaining AI / Antigravity quotas.
+     */
+    private function sendQuotaStatus(string $remoteJid, ?string $messageId = null): void
+    {
+        $quota = cache()->get('antigravity_quota');
+
+        if (! $quota || empty($quota['limit_5h'])) {
+            $this->notificationService->sendText(
+                $remoteJid,
+                "⚠️ *Nenhuma cota sincronizada ainda.*\nCertifique-se de que o Antigravity esteja em execução no computador.",
+                $messageId
+            );
+
+            return;
+        }
+
+        $tier = $quota['user_tier'] ?? 'Google AI Pro';
+        $limit5h = $quota['limit_5h'] ?? [];
+        $limitWeekly = $quota['limit_weekly'] ?? [];
+        $updatedAt = ! empty($quota['updated_at']) ? Carbon::parse($quota['updated_at']) : null;
+
+        $pct5h = $limit5h['remaining_percentage'] ?? 100;
+        $reset5hStr = '';
+        if (! empty($limit5h['reset_time'])) {
+            $reset5h = Carbon::parse($limit5h['reset_time'])->setTimezone(config('app.timezone', 'America/Sao_Paulo'));
+            $diffHours = (int) now()->diffInHours($reset5h, false);
+            $diffMinutes = (int) now()->diffInMinutes($reset5h, false) % 60;
+            $reset5hStr = "\n  • Reset: *{$reset5h->format('H:i')}* (em ~{$diffHours}h {$diffMinutes}m)";
+        }
+
+        $pctWeekly = $limitWeekly['remaining_percentage'] ?? 100;
+        $resetWeeklyStr = '';
+        if (! empty($limitWeekly['reset_time'])) {
+            $resetWeekly = Carbon::parse($limitWeekly['reset_time'])->setTimezone(config('app.timezone', 'America/Sao_Paulo'));
+            $diffDays = (int) now()->diffInDays($resetWeekly, false);
+            $diffHours = (int) now()->diffInHours($resetWeekly, false) % 24;
+            $resetWeeklyStr = "\n  • Reset: *{$resetWeekly->format('d/m \à\s H:i')}* (em ~{$diffDays}d {$diffHours}h)";
+        }
+
+        $lastSync = $updatedAt ? $updatedAt->setTimezone(config('app.timezone', 'America/Sao_Paulo'))->diffForHumans() : 'recente';
+
+        $icon5h = $pct5h > 50 ? '🟢' : ($pct5h > 20 ? '🟡' : '🔴');
+        $iconWeekly = $pctWeekly > 50 ? '🟢' : ($pctWeekly > 20 ? '🟡' : '🔴');
+
+        $lines = [
+            "🤖 *Cotas do Antigravity / Gemini*",
+            "🌟 *Plano:* {$tier}",
+            "",
+            "{$icon5h} *Limite de 5 Horas:* {$pct5h}% restante{$reset5hStr}",
+            "",
+            "{$iconWeekly} *Limite Semanal:* {$pctWeekly}% restante{$resetWeeklyStr}",
+            "",
+            "🕒 _Sincronizado {$lastSync}_",
+        ];
+
+        $this->notificationService->sendText($remoteJid, implode("\n", $lines), $messageId);
     }
 }

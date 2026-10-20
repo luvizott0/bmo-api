@@ -17,10 +17,15 @@ use App\Http\Controllers\Api\ProjectController;
 use App\Http\Controllers\Api\ReleaseController;
 use App\Http\Controllers\Api\ReminderController;
 use App\Http\Controllers\Api\TaskController;
+use App\Http\Controllers\Api\QuotaController;
 use App\Http\Controllers\Api\WhatsAppWebhookController;
 use App\Http\Controllers\Api\WorkspaceController;
 use App\Http\Controllers\Api\WorkspaceInvitationController;
 use Illuminate\Support\Facades\Route;
+
+// System & AI Quotas
+Route::post('/system/quota-sync', [QuotaController::class, 'sync']);
+Route::get('/system/quota', [QuotaController::class, 'get']);
 
 // Webhooks
 Route::post('/webhooks/whatsapp', [WhatsAppWebhookController::class, 'handle']);
