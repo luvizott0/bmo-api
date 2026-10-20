@@ -256,11 +256,20 @@ class AiTaskDispatcherService
         $project = $release->project;
         $githubToken = config('services.github.token');
 
-        if (! $project || ! $project->github_repo || ! $githubToken) {
-            throw new \RuntimeException('Repositório do GitHub ou token não configurado para o projeto.');
+        if (! $project || ! $githubToken) {
+            throw new \RuntimeException('Projeto não encontrado ou token do GitHub não configurado no servidor.');
         }
 
-        $repo = trim($project->github_repo, '/');
+        $availableRepos = array_unique(array_filter([
+            $project->frontend_repo,
+            $project->backend_repo,
+            $project->github_repo,
+        ]));
+
+        if (empty($availableRepos)) {
+            throw new \RuntimeException('Nenhum repositório do GitHub configurado para o projeto.');
+        }
+
         $release->load('tasks');
         $tasks = $release->tasks;
 
@@ -275,37 +284,85 @@ class AiTaskDispatcherService
         $errors = [];
 
         foreach ($tasks as $task) {
-            $branch = $task->branch_name;
-            if (! $branch) {
+            $branchesToMerge = [];
+
+            if ($task->frontend_branch_name && $project->frontend_repo) {
+                $branchesToMerge[] = [
+                    'repo' => trim($project->frontend_repo, '/'),
+                    'branch' => $task->frontend_branch_name,
+                    'label' => 'Frontend',
+                ];
+            }
+            if ($task->backend_branch_name && $project->backend_repo) {
+                $branchesToMerge[] = [
+                    'repo' => trim($project->backend_repo, '/'),
+                    'branch' => $task->backend_branch_name,
+                    'label' => 'Backend',
+                ];
+            }
+
+            if ($task->branch_name) {
+                $taskRepo = $this->resolveRepoForTask($task, $project);
+                if ($taskRepo) {
+                    $taskRepo = trim($taskRepo, '/');
+                    $exists = false;
+                    foreach ($branchesToMerge as $bm) {
+                        if ($bm['repo'] === $taskRepo && $bm['branch'] === $task->branch_name) {
+                            $exists = true;
+                            break;
+                        }
+                    }
+                    if (! $exists) {
+                        $branchesToMerge[] = [
+                            'repo' => $taskRepo,
+                            'branch' => $task->branch_name,
+                            'label' => ucfirst($task->target_scope ?? 'unified'),
+                        ];
+                    }
+                }
+            }
+
+            if (empty($branchesToMerge)) {
+                $logs[] = '[' . now()->format('H:i:s') . "] ⚠️ Tarefa {$task->task_code} não possui branch ou repositório configurado para merge.";
                 continue;
             }
 
-            // GitHub API: POST /repos/{owner}/{repo}/merges
-            $url = "https://api.github.com/repos/{$repo}/merges";
+            foreach ($branchesToMerge as $bm) {
+                $repo = $bm['repo'];
+                $branch = $bm['branch'];
+                $label = $bm['label'];
 
-            try {
-                $response = Http::withToken($githubToken)
-                    ->withHeaders([
-                        'Accept' => 'application/vnd.github+json',
-                        'X-GitHub-Api-Version' => '2022-11-28',
-                    ])
-                    ->post($url, [
-                        'base' => 'release',
-                        'head' => $branch,
-                        'commit_message' => "Release {$release->version}: Merge {$task->task_code} ({$task->title}) into release",
-                    ]);
+                // GitHub API: POST /repos/{owner}/{repo}/merges
+                $url = "https://api.github.com/repos/{$repo}/merges";
 
-                if ($response->successful()) {
-                    $logs[] = '[' . now()->format('H:i:s') . "] ✅ Branch '{$branch}' ({$task->task_code}) mergeada na 'release'.";
-                    $mergedTasks[] = $task->task_code;
-                } else {
-                    $errText = $response->json('message') ?? $response->body();
-                    $logs[] = '[' . now()->format('H:i:s') . "] ⚠️ Falha ao mergear branch '{$branch}': {$errText}";
-                    $errors[] = "{$task->task_code}: {$errText}";
+                try {
+                    $response = Http::withToken($githubToken)
+                        ->withHeaders([
+                            'Accept' => 'application/vnd.github+json',
+                            'X-GitHub-Api-Version' => '2022-11-28',
+                        ])
+                        ->post($url, [
+                            'base' => 'release',
+                            'head' => $branch,
+                            'commit_message' => "Release {$release->version}: Merge {$task->task_code} ({$task->title}) into release",
+                        ]);
+
+                    if ($response->successful()) {
+                        if ($response->status() === 204) {
+                            $logs[] = '[' . now()->format('H:i:s') . "] ℹ️ Branch '{$branch}' ({$task->task_code} [{$label}]) já estava sincronizada na 'release' de {$repo}.";
+                        } else {
+                            $logs[] = '[' . now()->format('H:i:s') . "] ✅ Branch '{$branch}' ({$task->task_code} [{$label}]) mergeada na 'release' de {$repo}.";
+                        }
+                        $mergedTasks[] = "{$task->task_code} [{$label}]";
+                    } else {
+                        $errText = $response->json('message') ?? $response->body();
+                        $logs[] = '[' . now()->format('H:i:s') . "] ⚠️ Falha ao mergear branch '{$branch}' em {$repo}: {$errText}";
+                        $errors[] = "{$task->task_code}: {$errText}";
+                    }
+                } catch (\Throwable $e) {
+                    $logs[] = '[' . now()->format('H:i:s') . "] ❌ Erro ao conectar com GitHub ({$branch} em {$repo}): {$e->getMessage()}";
+                    $errors[] = "{$task->task_code}: {$e->getMessage()}";
                 }
-            } catch (\Throwable $e) {
-                $logs[] = '[' . now()->format('H:i:s') . "] ❌ Erro ao conectar com GitHub ({$branch}): {$e->getMessage()}";
-                $errors[] = "{$task->task_code}: {$e->getMessage()}";
             }
         }
 
@@ -320,7 +377,7 @@ class AiTaskDispatcherService
             $projectName = $project->name ?? 'Projeto';
             $prefix = $project->prefix ?? 'PRJ';
             $sandboxDomain = strtolower($prefix) . '.bmo';
-            if ($prefix === 'CPH') {
+            if ($prefix === 'CPH' || $prefix === 'CAH') {
                 $sandboxDomain = 'capihouse.bmo';
             } elseif ($prefix === 'CST') {
                 $sandboxDomain = 'capyshowtime.bmo';
@@ -352,45 +409,66 @@ class AiTaskDispatcherService
         $project = $release->project;
         $githubToken = config('services.github.token');
 
-        if (! $project || ! $project->github_repo || ! $githubToken) {
-            throw new \RuntimeException('Repositório do GitHub ou token não configurado para o projeto.');
+        if (! $project || ! $githubToken) {
+            throw new \RuntimeException('Projeto não encontrado ou token do GitHub não configurado no servidor.');
         }
 
-        $repo = trim($project->github_repo, '/');
+        $repos = array_unique(array_filter([
+            $project->frontend_repo,
+            $project->backend_repo,
+            $project->github_repo,
+        ]));
+
+        if (empty($repos)) {
+            throw new \RuntimeException('Nenhum repositório do GitHub configurado para o projeto.');
+        }
+
         $release->load('tasks');
 
         $logs = $release->logs ?? [];
         $logs[] = '[' . now()->format('H:i:s') . "] Promovendo Release {$release->version} da branch 'release' para 'main' (PRODUÇÃO)...";
 
-        // GitHub API: POST /repos/{owner}/{repo}/merges
-        $url = "https://api.github.com/repos/{$repo}/merges";
+        $promotedRepos = [];
+        $errors = [];
 
-        try {
-            $response = Http::withToken($githubToken)
-                ->withHeaders([
-                    'Accept' => 'application/vnd.github+json',
-                    'X-GitHub-Api-Version' => '2022-11-28',
-                ])
-                ->post($url, [
-                    'base' => 'main',
-                    'head' => 'release',
-                    'commit_message' => "Release {$release->version}: {$release->title} (Promoted to Production)",
-                ]);
+        foreach ($repos as $repo) {
+            $repo = trim($repo, '/');
+            $url = "https://api.github.com/repos/{$repo}/merges";
 
-            if ($response->successful()) {
-                $logs[] = '[' . now()->format('H:i:s') . "] ✅ Branch 'release' mergeada com sucesso na 'main'!";
-            } else {
-                $errText = $response->json('message') ?? $response->body();
-                $logs[] = '[' . now()->format('H:i:s') . "] ❌ Falha no merge para 'main': {$errText}";
-                $release->logs = $logs;
-                $release->save();
-                throw new \RuntimeException("Falha ao promover release para main: {$errText}");
+            try {
+                $response = Http::withToken($githubToken)
+                    ->withHeaders([
+                        'Accept' => 'application/vnd.github+json',
+                        'X-GitHub-Api-Version' => '2022-11-28',
+                    ])
+                    ->post($url, [
+                        'base' => 'main',
+                        'head' => 'release',
+                        'commit_message' => "Release {$release->version}: {$release->title} (Promoted to Production)",
+                    ]);
+
+                if ($response->successful()) {
+                    if ($response->status() === 204) {
+                        $logs[] = '[' . now()->format('H:i:s') . "] ℹ️ Repositório {$repo}: branch 'release' já estava sincronizada com 'main'.";
+                    } else {
+                        $logs[] = '[' . now()->format('H:i:s') . "] ✅ Repositório {$repo}: branch 'release' mergeada com sucesso na 'main'!";
+                    }
+                    $promotedRepos[] = $repo;
+                } else {
+                    $errText = $response->json('message') ?? $response->body();
+                    $logs[] = '[' . now()->format('H:i:s') . "] ⚠️ Repositório {$repo}: falha no merge de 'release' para 'main': {$errText}";
+                    $errors[] = "{$repo}: {$errText}";
+                }
+            } catch (\Throwable $e) {
+                $logs[] = '[' . now()->format('H:i:s') . "] ❌ Erro de comunicação com GitHub ({$repo}): {$e->getMessage()}";
+                $errors[] = "{$repo}: {$e->getMessage()}";
             }
-        } catch (\Throwable $e) {
-            $logs[] = '[' . now()->format('H:i:s') . "] ❌ Erro de comunicação com o GitHub: {$e->getMessage()}";
+        }
+
+        if (empty($promotedRepos)) {
             $release->logs = $logs;
             $release->save();
-            throw $e;
+            throw new \RuntimeException("Falha ao promover release para main: " . implode('; ', $errors));
         }
 
         $release->status = 'production';
@@ -423,6 +501,21 @@ class AiTaskDispatcherService
             'success' => true,
             'logs' => $logs,
         ];
+    }
+
+    /**
+     * Resolve the target repository for a task based on target_scope, backend_repo, frontend_repo, or github_repo.
+     */
+    private function resolveRepoForTask(Task $task, Project $project): ?string
+    {
+        $targetScope = $task->target_scope ?? 'auto';
+        if ($targetScope === 'backend' && $project->backend_repo) {
+            return $project->backend_repo;
+        }
+        if ($targetScope === 'frontend' && $project->frontend_repo) {
+            return $project->frontend_repo;
+        }
+        return $project->frontend_repo ?: ($project->backend_repo ?: $project->github_repo);
     }
 
     private function appendLog(Task $task, string $message): void
