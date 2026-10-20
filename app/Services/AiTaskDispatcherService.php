@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Project;
 use App\Models\Release;
 use App\Models\Task;
 use Illuminate\Support\Facades\Http;
