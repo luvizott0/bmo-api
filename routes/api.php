@@ -21,6 +21,7 @@ use App\Http\Controllers\Api\QuotaController;
 use App\Http\Controllers\Api\WhatsAppWebhookController;
 use App\Http\Controllers\Api\WorkspaceController;
 use App\Http\Controllers\Api\WorkspaceInvitationController;
+use App\Http\Controllers\Api\DockerController;
 use Illuminate\Support\Facades\Route;
 
 // System & AI Quotas
@@ -58,6 +59,15 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::get('/workspaces/{workspace}/members', [WorkspaceController::class, 'members']);
     Route::get('/workspaces/{workspace}/invitations', [WorkspaceInvitationController::class, 'index']);
     Route::post('/workspaces/{workspace}/invitations', [WorkspaceInvitationController::class, 'store']);
+
+    // Docker Containers Management (Homelab / Machine Services)
+    Route::prefix('docker')->group(function (): void {
+        Route::get('/containers', [DockerController::class, 'index']);
+        Route::post('/containers/{idOrName}/start', [DockerController::class, 'start']);
+        Route::post('/containers/{idOrName}/stop', [DockerController::class, 'stop']);
+        Route::post('/containers/{idOrName}/restart', [DockerController::class, 'restart']);
+        Route::get('/containers/{idOrName}/logs', [DockerController::class, 'logs']);
+    });
 
     // Workspace-scoped Financial Module
     Route::middleware('workspace')->group(function (): void {
