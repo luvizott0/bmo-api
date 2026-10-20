@@ -74,6 +74,16 @@ class AiTaskDispatcherService
             ])
             ->toArray();
 
+        $branchPrefix = match ($task->type) {
+            'hotfix' => 'hotfix',
+            'bugfix' => 'fix',
+            default => 'feat',
+        };
+        $cleanBranch = "{$branchPrefix}/{$task->task_code}";
+        if (empty($task->branch_name) || str_contains($task->branch_name, "{$task->task_code}-")) {
+            $task->update(['branch_name' => $cleanBranch]);
+        }
+
         $payload = [
             'task_id' => $task->id,
             'task_code' => $task->task_code,

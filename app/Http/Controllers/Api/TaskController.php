@@ -89,8 +89,7 @@ class TaskController extends Controller
             default => 'feat',
         };
 
-        $slugTitle = Str::slug(Str::limit($validated['title'], 40, ''));
-        $defaultBranch = "{$branchPrefix}/{$taskCode}-{$slugTitle}";
+        $defaultBranch = "{$branchPrefix}/{$taskCode}";
 
         $status = $validated['status'] ?? 'todo';
 
