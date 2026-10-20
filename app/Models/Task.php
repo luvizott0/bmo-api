@@ -57,4 +57,9 @@ class Task extends Model
     {
         return $this->belongsTo(Release::class);
     }
+
+    public function comments(): \Illuminate\Database\Eloquent\Relations\HasMany
+    {
+        return $this->hasMany(TaskComment::class)->orderBy('created_at', 'asc');
+    }
 }

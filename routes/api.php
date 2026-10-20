@@ -17,6 +17,7 @@ use App\Http\Controllers\Api\ProjectController;
 use App\Http\Controllers\Api\ReleaseController;
 use App\Http\Controllers\Api\ReminderController;
 use App\Http\Controllers\Api\TaskController;
+use App\Http\Controllers\Api\TaskCommentController;
 use App\Http\Controllers\Api\QuotaController;
 use App\Http\Controllers\Api\WhatsAppWebhookController;
 use App\Http\Controllers\Api\WorkspaceController;
@@ -132,6 +133,9 @@ Route::middleware('auth:sanctum')->group(function (): void {
         Route::patch('/tasks/{task}/status', [TaskController::class, 'updateStatus']);
         Route::apiResource('projects', ProjectController::class);
         Route::apiResource('tasks', TaskController::class);
+        Route::get('/tasks/{task}/comments', [TaskCommentController::class, 'index']);
+        Route::post('/tasks/{task}/comments', [TaskCommentController::class, 'store']);
+        Route::delete('/tasks/{task}/comments/{comment}', [TaskCommentController::class, 'destroy']);
 
         // Releases & Deployments
         Route::post('/releases/{release}/deploy-sandbox', [ReleaseController::class, 'deploySandbox']);

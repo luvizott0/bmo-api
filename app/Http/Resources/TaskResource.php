@@ -37,6 +37,7 @@ class TaskResource extends JsonResource
             'due_date' => $this->due_date?->format('Y-m-d'),
             'completed_at' => $this->completed_at?->toISOString(),
             'project' => new ProjectResource($this->whenLoaded('project')),
+            'comments' => TaskCommentResource::collection($this->whenLoaded('comments')),
             'created_at' => $this->created_at?->toISOString(),
             'updated_at' => $this->updated_at?->toISOString(),
         ];

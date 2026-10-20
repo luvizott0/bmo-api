@@ -63,11 +63,23 @@ class AiTaskDispatcherService
             return false;
         }
 
+        $comments = $task->comments()
+            ->orderBy('created_at', 'asc')
+            ->get()
+            ->map(fn ($c) => [
+                'author' => $c->author_name,
+                'type' => $c->author_type,
+                'content' => $c->content,
+                'created_at' => $c->created_at->toISOString(),
+            ])
+            ->toArray();
+
         $payload = [
             'task_id' => $task->id,
             'task_code' => $task->task_code,
             'task_title' => $task->title,
             'task_description' => $task->description ?? '',
+            'comments' => $comments,
             'github_repo' => $repo,
             'base_branch' => $project->base_branch ?: 'develop',
             'branch_name' => $task->branch_name,
@@ -79,6 +91,9 @@ class AiTaskDispatcherService
         ];
 
         try {
+            if (! empty($comments)) {
+                $this->appendLog($task, sprintf('Revisão detectada: incluindo %d comentário(s) de feedback no contexto da IA.', count($comments)));
+            }
             $this->appendLog($task, 'Disparando Agente de IA no BMO Homelab...');
 
             $response = Http::timeout(10)->post($workerUrl, $payload);

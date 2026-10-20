@@ -24,7 +24,7 @@ class TaskController extends Controller
     {
         $query = $request->workspace()
             ->tasks()
-            ->with('project')
+            ->with(['project', 'comments'])
             ->orderBy('order', 'asc')
             ->orderBy('id', 'desc');
 
@@ -48,7 +48,7 @@ class TaskController extends Controller
     {
         $tasks = $request->workspace()
             ->tasks()
-            ->with('project')
+            ->with(['project', 'comments'])
             ->where('status', 'in_progress')
             ->orderBy('updated_at', 'desc')
             ->get();
@@ -123,7 +123,7 @@ class TaskController extends Controller
     public function show(Request $request, Task $task): JsonResponse
     {
         $this->ensureWorkspaceTask($request, $task);
-        $task->load('project');
+        $task->load(['project', 'comments']);
 
         return (new TaskResource($task))->response();
     }
@@ -157,7 +157,7 @@ class TaskController extends Controller
         }
 
         $task->update($validated);
-        $task->load('project');
+        $task->load(['project', 'comments']);
 
         return (new TaskResource($task))->response();
     }
@@ -189,7 +189,7 @@ class TaskController extends Controller
         }
 
         $task->update($updates);
-        $task->load('project');
+        $task->load(['project', 'comments']);
 
         // Automatic AI Trigger when moving to in_progress
         if ($newStatus === 'in_progress' && $oldStatus !== 'in_progress' && $task->assignee_type === 'ai') {
